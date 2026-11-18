@@ -170,6 +170,71 @@ void dmrAesStateInit(dmrAesState_t *st)
 {
 	memset(st, 0, sizeof(*st));
 	st->aes_slot = -1;
+	st->tx_slot = -1;
+}
+
+bool dmrAesSetTx(dmrAesState_t *st, int8_t slot)
+{
+	if (slot < 0) {
+		st->tx_slot = -1;
+		return true;
+	}
+	if (slot >= DMR_AES_KEY_SLOTS || !st->keys[slot].valid) {
+		st->tx_slot = -1;
+		return false;
+	}
+	st->tx_slot = slot;
+	return true;
+}
+
+bool dmrAesTxKey(const dmrAesState_t *st, uint8_t *alg, uint8_t *key_id)
+{
+	if (st->tx_slot < 0 || !st->keys[st->tx_slot].valid)
+		return false;
+	*alg = st->keys[st->tx_slot].alg;
+	*key_id = st->keys[st->tx_slot].key_id;
+	return true;
+}
+
+static void use_key(dmrAesState_t *st, int8_t slot)
+{
+	if (st->aes_slot != slot) {
+		aes256Init(&st->aes, st->keys[slot].key);
+		st->aes_slot = slot;
+	}
+}
+
+static void put32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+uint32_t dmrAesNewMi(uint32_t now_ms, void *ctx)
+{
+	dmrAesState_t *st = (dmrAesState_t *)ctx;
+	uint8_t b[16] = { 0 };
+	uint32_t mi;
+
+	st->mi_count++;
+	put32(&b[0], now_ms);
+	put32(&b[4], st->mi_count);
+	put32(&b[8], st->mi_last);
+	b[12] = 'M';
+	b[13] = 'I';
+	if (st->tx_slot >= 0 && st->keys[st->tx_slot].valid) {
+		use_key(st, st->tx_slot);
+		aes256Encrypt(&st->aes, b, b);
+		mi = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+	} else {
+		mi = (now_ms * 2654435761u) ^ (st->mi_count * 0x9E3779B9u) ^ st->mi_last;	// no key: never used
+	}
+	if (mi == 0)
+		mi = 1;
+	st->mi_last = mi;
+	return mi;
 }
 
 bool dmrAesSetKey(dmrAesState_t *st, uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[DMR_AES_KEY_BYTES])
@@ -190,6 +255,8 @@ bool dmrAesSetKey(dmrAesState_t *st, uint8_t slot, uint8_t alg, uint8_t key_id, 
 		st->aes_slot = -1;
 		memset(&st->aes, 0, sizeof(st->aes));
 	}
+	if (st->tx_slot == (int8_t)slot && !k->valid)
+		st->tx_slot = -1;
 	return true;
 }
 
@@ -220,10 +287,7 @@ bool dmrAesCallHook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx
 
 	if (slot < 0)
 		return false;
-	if (st->aes_slot != slot) {
-		aes256Init(&st->aes, st->keys[slot].key);
-		st->aes_slot = slot;
-	}
+	use_key(st, slot);
 	if (!st->iv_valid || st->iv_mi != pos->mi || st->iv_sf != pos->superframe) {
 		// The next superframe's IV is this one's shifted by a word: only the LFSR steps since are run
 		if (st->iv_valid && st->iv_mi == pos->mi && pos->superframe == st->iv_sf + 1) {

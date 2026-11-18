@@ -28,6 +28,7 @@
 #include "storage/storage.h"
 #include "codeplug/codeplug_kv.h"
 #include "dmr/dmrPrivacy.h"
+#include "dmr/dmrAes.h"
 #include "dmr/dmrData.h"
 #include "sim/sim_flash.h"
 #include "sim/codeplug_copy_stub.h"
@@ -3054,6 +3055,33 @@ static void test_dmr_voice_features(void)
 	tx_once();
 	air_lc(first, &l);
 	CHECK(l.fid == 0 && l.svc == 0);
+
+#if CONFIG_DMR_AES
+	// AES: a key loaded, then chosen for TX: the privacy FID and option, and a PI header with its key ID after the
+	// voice LC headers. Cleared, and the calls go out clear again
+	static const uint8_t key[32] = { 1, 2, 3 };
+
+	radio_req_dmr_aes_tx(0);	// no key in the slot yet: stays clear
+	CHECK(!d->privacy);
+	radio_req_dmr_aes_key(0, 0x25, 9, key);
+	radio_req_dmr_aes_tx(0);
+	CHECK(d->privacy);
+	first = sim.air_count;
+	tx_once();
+	air_lc(first, &l);
+	CHECK(l.fid == 0x10 && l.svc == DMR_SVC_PRIVACY);
+	bool pi = false;
+	for (unsigned i = first; i < sim.air_count; i++)
+		if (sim.air[i].kind == DMR_BURST_PI_HEADER && sim.air[i].payload[0] == 0x25 && sim.air[i].payload[2] == 9)
+			pi = true;
+	CHECK(pi);
+	radio_req_dmr_aes_key(0, 0, 0, NULL);	// clearing the slot ends TX encryption too
+	CHECK(!d->privacy);
+	first = sim.air_count;
+	tx_once();
+	air_lc(first, &l);
+	CHECK(l.fid == 0 && l.svc == 0);
+#endif
 }
 
 // ---- DMR emergency in the radio core (docs/spec/dmr-emergency.md): the hot mic keys a call with the emergency service
@@ -3631,6 +3659,19 @@ void radio_req_dmr_focus(uint32_t id, bool p)
 	req(RREQ_DMR_FOCUS, (int32_t)((id & 0xFFFFFFu) | (p ? 1u << 24 : 0)));
 }
 void radio_req_dmr_privacy(uint8_t type, uint16_t key) { req(RREQ_DMR_PRIVACY, (int32_t)(((uint32_t)type << 16) | key)); }
+#if CONFIG_DMR_AES
+void radio_req_dmr_aes_key(uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[32])
+{
+	dmrAesStage(slot, alg, key_id, key);
+	req(RREQ_DMR_AES_KEY, slot);
+}
+void radio_req_dmr_aes_tx(int8_t slot)
+{
+	radio_req_t r = { RREQ_DMR_AES_KEY, slot, 1 };
+
+	radio_sm_request(&sm, &r, now);
+}
+#endif
 static uint16_t input_long, input_repeat;
 void input_set_timing(uint16_t l, uint16_t r) { input_long = l; input_repeat = r; }
 static bool ptt_blocked;

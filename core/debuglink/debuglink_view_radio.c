@@ -469,6 +469,18 @@ uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *a, uint16_t len)
 #else
 		return DL_ST_UNAVAILABLE;
 #endif
+	case DL_OP_DMR_AES_TX:
+		// u8 slot: encrypt our overs with that AES key slot (0..3), 0xFF = send in the clear. RAM only. A slot with
+		// no key leaves TX clear
+		if (len < 1 || (a[0] >= 4 && a[0] != 0xFF)) {
+			return DL_ST_BAD_ARG;
+		}
+#if CONFIG_DMR_AES
+		radio_req_dmr_aes_tx(a[0] == 0xFF ? -1 : (int8_t)a[0]);
+		return DL_ST_OK;
+#else
+		return DL_ST_UNAVAILABLE;
+#endif
 	case DL_OP_NXDN: {
 		// The NXDN settings (radio_nxdn_settings_t, RAM only; docs/spec/debuglink.md 3.8): u8 flags (bit 0: 9600
 		// bit/s, else 4800; bit 1: PTT calls a unit; bit 2: emergency), u8 rx_ran (0 any), u8 tx_ran, u16 rx_gid (0: the

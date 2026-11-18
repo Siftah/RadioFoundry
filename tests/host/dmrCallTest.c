@@ -2617,15 +2617,30 @@ static struct dmr_crypt_pos crypt_log[64];
 static unsigned crypt_n;
 static uint8_t crypt_key_id = 5;
 
+static unsigned crypt_tx_n;
+
 static bool crypt_hook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx, void *ctx)
 {
-	(void)ambe27;
 	(void)ctx;
-	if (tx || pos->key_id != crypt_key_id)
+	if (pos->key_id != crypt_key_id)
 		return false;
+	if (tx) {
+		if (crypt_tx_n < 64)
+			crypt_log[crypt_tx_n] = *pos;
+		crypt_tx_n++;
+		ambe27[26] ^= 0xFF;	// marks the burst as encrypted
+		return true;
+	}
 	if (crypt_n < 64)
 		crypt_log[crypt_n++] = *pos;
 	return true;
+}
+
+static uint32_t crypt_mi(uint32_t now_ms, void *ctx)
+{
+	(void)now_ms;
+	(void)ctx;
+	return 0xCD6554E0;
 }
 
 static void test_crypt_hook(void)
@@ -2689,6 +2704,80 @@ static void test_crypt_hook(void)
 	CHECK(sink_log.frames == 0);
 	rx_header(lc, 1, 0, DMR_SYNC_MS, true);
 	run_ms(500);
+	crypt_key_id = 5;
+}
+
+// An encrypted over: voice LC headers with FID 0x10 and the privacy option, our PI header with the new MI, then every
+// voice burst through the hook with its superframe
+static void test_crypt_tx(void)
+{
+	dmr_call_config_t c = base_cfg();
+	dmr_call_stats_t st;
+
+	c.crypt = crypt_hook;
+	c.crypt_mi = crypt_mi;
+	c.tx_crypt_alg = 0x25;
+	c.tx_crypt_key_id = 5;
+	c.tx_fid = 0x10;
+	c.tx_svc = DMR_SVC_PRIVACY;
+	setup(&c);
+	crypt_tx_n = 0;
+	dmr_call_ptt(true);
+	run_ms(1500);
+	dmr_call_ptt(false);
+	run_ms(700);
+	CHECK(V()->state == DMR_CALL_STATE_IDLE);
+
+	unsigned i = 0;
+
+	for (; i < DMR_CALL_TX_HEADERS; i++) {
+		CHECK(sim.air[i].kind == DMR_BURST_VOICE_LC_HEADER);
+		dmr_lc_t l;
+
+		dmr_lc_unpack(sim.air[i].payload, &l);
+		CHECK(l.fid == 0x10 && (l.svc & DMR_SVC_PRIVACY));
+	}
+	static const uint8_t want[10] = { 0x25, 0x10, 0x05, 0xCD, 0x65, 0x54, 0xE0 };
+	uint8_t w[10];
+
+	memcpy(w, want, 10);
+	w[7] = (uint8_t)(TG_TALK >> 16);
+	w[8] = (uint8_t)(TG_TALK >> 8);
+	w[9] = (uint8_t)TG_TALK;
+	uint16_t crc = (uint16_t)(dmr_crc_ccitt(w, 10) ^ DMR_CRC_MASK_PI);
+
+	CHECK(sim.air[i].kind == DMR_BURST_PI_HEADER && sim.air[i].len == 12 && sim.air[i].host_crc);
+	CHECK(memcmp(sim.air[i].payload, w, 10) == 0 && sim.air[i].payload[10] == (uint8_t)(crc >> 8) &&
+	      sim.air[i].payload[11] == (uint8_t)crc);
+	i++;
+
+	unsigned v = 0;
+
+	for (; i < sim.air_count && sim.air[i].kind == DMR_BURST_VOICE; i++, v++) {
+		CHECK(sim.air[i].voice_index == v % 6);
+	}
+	CHECK(v >= 18 && v % 6 == 0 && crypt_tx_n == v);
+	for (unsigned n = 0; n < crypt_tx_n && n < 64; n++) {
+		const struct dmr_crypt_pos *p = &crypt_log[n];
+
+		CHECK(p->alg == 0x25 && p->key_id == 5 && p->mi == 0xCD6554E0 && p->superframe == n / 6 &&
+		      p->voice_index == n % 6);
+	}
+	dmr_call_get_stats(&st);
+	CHECK(st.tx_pi_headers == 1);
+
+	// The key gone: the over goes out as silence, never in the clear
+	crypt_key_id = 6;
+	setup(&c);
+	crypt_tx_n = 0;
+	dmr_call_ptt(true);
+	run_ms(600);
+	dmr_call_ptt(false);
+	run_ms(700);
+	for (unsigned k = 0; k < sim.air_count; k++)
+		if (sim.air[k].kind == DMR_BURST_VOICE)
+			for (int f = 0; f < 3; f++)
+				CHECK(memcmp(&sim.air[k].payload[f * 9], dmr_ambe_silence, 9) == 0);
 	crypt_key_id = 5;
 }
 
@@ -3413,6 +3502,7 @@ int main(void)
 	test_alias_formats();
 	test_pi_header_and_emergency();
 	test_crypt_hook();
+	test_crypt_tx();
 	test_private_calls();
 	test_basic_privacy();
 	test_gps_lc();

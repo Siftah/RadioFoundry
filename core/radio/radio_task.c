@@ -452,6 +452,9 @@ static void post_pair(uint8_t type, int32_t arg, uint32_t arg2, TickType_t wait)
 	radio_req_t req = { .type = type, .arg = arg, .arg2 = arg2 };
 	send(&req, wait);
 }
+#if CONFIG_DMR_AES
+void radio_req_dmr_aes_tx(int8_t slot) { post_pair(RREQ_DMR_AES_KEY, slot, 1, 0); }
+#endif
 
 #if CONFIG_DMR || CONFIG_P25 || CONFIG_NXDN
 void radio_req_mode(uint8_t mode) { post(RREQ_MODE, mode, 0); }

@@ -64,6 +64,9 @@ typedef struct {
 	bool iv_valid;
 	uint32_t iv_mi, iv_sf;
 	uint8_t iv[16];
+	int8_t tx_slot;		// our overs are encrypted with this key, -1 = sent in the clear
+	uint32_t mi_count;	// MIs made since the start
+	uint32_t mi_last;
 } dmrAesState_t;
 
 void dmrAesStateInit(dmrAesState_t *st);
@@ -72,6 +75,14 @@ bool dmrAesSetKey(dmrAesState_t *st, uint8_t slot, uint8_t alg, uint8_t key_id, 
 bool dmrAesHasKeys(const dmrAesState_t *st);
 // The slot holding a key for this algorithm and key ID, -1 = none
 int8_t dmrAesFindKey(const dmrAesState_t *st, uint8_t alg, uint8_t key_id);
+// Encrypt our overs with slot's key (-1 = clear). False: a bad slot or an empty one (then TX stays clear)
+bool dmrAesSetTx(dmrAesState_t *st, int8_t slot);
+// The key our overs use, if any: its algorithm and key ID
+bool dmrAesTxKey(const dmrAesState_t *st, uint8_t *alg, uint8_t *key_id);
+// The call stack's MI source (dmr_crypt_mi_fn): ctx is a dmrAesState_t. The TX key encrypts the time, a count and
+// the previous MI, so MIs don't repeat for a key within a run, and after a restart only if a count and the
+// millisecond of a key-up both come back (no hardware RNG on these radios). Never 0
+uint32_t dmrAesNewMi(uint32_t now_ms, void *ctx);
 
 // The call stack's crypt hook (dmr_crypt_fn, core/dmr/call/dmr_call.h): ctx is a dmrAesState_t. False: no key for the
 // call's algorithm and key ID (the burst is not played)

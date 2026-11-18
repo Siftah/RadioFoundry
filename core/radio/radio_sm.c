@@ -1459,10 +1459,16 @@ static void dmr_configure(radio_sm_t *sm)
 	}
 #endif
 #if CONFIG_DMR_AES
-	// Calls with a PI header (receive only for now: docs/spec/dmr-voice.md 5.2)
+	// Calls with a PI header; our overs too when a TX key is chosen (docs/spec/dmr-voice.md 5.1)
 	if (aes_ready && dmrAesHasKeys(&aes_keys)) {
 		cfg.crypt = dmrAesCallHook;
 		cfg.crypt_ctx = &aes_keys;
+		if (dmrAesTxKey(&aes_keys, &cfg.tx_crypt_alg, &cfg.tx_crypt_key_id)) {
+			cfg.crypt_mi = dmrAesNewMi;
+			cfg.tx_fid = DMR_PRIVACY_FID;
+			cfg.tx_svc |= DMR_PRIVACY_SERVICE_OPTION;
+			privacy = true;
+		}
 	}
 #endif
 #if CONFIG_DMR_EMERGENCY
@@ -8019,7 +8025,12 @@ void radio_sm_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms)
 			dmrAesStateInit(&aes_keys);
 			aes_ready = true;
 		}
-		if (dmrAesTakeStaged((uint8_t)req->arg, &k)) {
+		if (req->arg2 == 1) {	// RREQ_DMR_AES_KEY with arg2 1: the TX key slot (-1 = clear)
+			dmrAesSetTx(&aes_keys, (int8_t)req->arg);
+			if (sm->dmr_running)
+				dmr_configure(sm);
+			changed(sm);
+		} else if (dmrAesTakeStaged((uint8_t)req->arg, &k)) {
 			dmrAesSetKey(&aes_keys, (uint8_t)req->arg, k.valid ? k.alg : 0, k.key_id, k.key);
 			memset(&k, 0, sizeof(k));
 			if (sm->dmr_running)

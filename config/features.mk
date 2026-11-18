@@ -22,7 +22,8 @@ CONFIG_DMR ?= y
 # basic privacy (Motorola / Anytone BP) on the voice path (needs DMR)
 CONFIG_DMR_PRIVACY ?= $(CONFIG_DMR)
 # AES-256 voice encryption, the DMRA scheme (PI header ALG 0x25, docs/spec/dmr-voice.md 5.1): calls with a PI header
-# decrypted with a key loaded over the debug link (RAM only). Needs DMR_PRIVACY (its AMBE FEC helpers)
+# decrypted, and our overs encrypted, with keys loaded over the debug link (RAM only). Needs DMR_PRIVACY (its AMBE FEC
+# helpers)
 CONFIG_DMR_AES ?= $(CONFIG_DMR_PRIVACY)
 # talker alias decode and TX of our radio name (needs DMR)
 CONFIG_DMR_TALKER_ALIAS ?= $(CONFIG_DMR)

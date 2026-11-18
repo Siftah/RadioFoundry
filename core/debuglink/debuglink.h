@@ -108,6 +108,7 @@ enum {
 	DL_OP_NXDN = 43,
 	DL_OP_BURST_CAPTURE = 44,
 	DL_OP_DMR_AES_KEY = 45,
+	DL_OP_DMR_AES_TX = 46,
 };
 uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *args, uint16_t len);
 // After a reply: the host port's reattach a PA key run asked for (PA_KEYRUN_FLAG_REATTACH); else a no-op
@@ -120,7 +121,7 @@ static inline bool debuglink_is_feature_op(uint8_t op)
 	       op == DL_OP_TX_LIMIT || op == DL_OP_TX_DRIVE || op == DL_OP_PA_KEYUP || op == DL_OP_VFO_SFR ||
 	       op == DL_OP_PA_SWEEP || op == DL_OP_PA_KEYRUN || op == DL_OP_VOICE_CAPTURE ||
 	       op == DL_OP_P25 || op == DL_OP_NXDN || op == DL_OP_BURST_CAPTURE ||
-	       op == DL_OP_DMR_AES_KEY;
+	       op == DL_OP_DMR_AES_KEY || op == DL_OP_DMR_AES_TX;
 }
 // VERSION's codec= (hal_vocoder_id; the name the host tests use)
 static inline const char *debuglink_codec_id(const hal_vocoder_t *v)

@@ -222,19 +222,17 @@ encrypted. Its algorithm ID (octet 0), key ID (octet 2) and MI (octets 3-6) go t
 `pi_key`, `pi_mi`); octet 1 is not interpreted (0x10 from the radios measured, their FID). A PI header heard just
 before a late entry is attached to that call, and a call that fades and resumes by late entry keeps its PI header. The
 static keystream can't undo an MI-based scheme, so such a call plays only through the crypt hook (`dmr_crypt_fn`,
-5.1) with a key for its algorithm and key ID; otherwise it is dropped as `rx_enc_dropped`. We never send PI headers
-yet.
+5.1) with a key for its algorithm and key ID; otherwise it is dropped as `rx_enc_dropped`. We send PI headers only for our own AES overs (5.1).
 
 ### 5.1 AES-256 with a message indicator
 
-The scheme behind PI headers with algorithm ID 0x25, as stock radios send it (`CONFIG_DMR_AES`, `core/dmr/dmrAes.c`,
-receive only). Measured on the SDR bench and checked against a reference decoder used as a black box;
+The scheme behind PI headers with algorithm ID 0x25, as stock radios send it (`CONFIG_DMR_AES`, `core/dmr/dmrAes.c`). Measured on the SDR bench and checked against a reference decoder used as a black box;
 `tests/host/dmrAesTest.c` decrypts a captured call with it.
 
 | Part | Layout |
 |---|---|
 | Voice LC | FID 0x10, service options 0x40 (privacy) |
-| PI header | octet 0 algorithm ID (0x25), 1 not interpreted, 2 key ID, 3-6 MI (most significant octet first), 7-9 not interpreted (`00 00 01` seen), then the CRC. A new MI each over |
+| PI header | octet 0 algorithm ID (0x25), 1 not interpreted (0x10 sent), 2 key ID, 3-6 MI (most significant octet first), 7-9 not interpreted on RX (`00 00 01` seen on a call to TG 1; we send the destination ID there, which gives the same bytes for TG 1, unconfirmed for other targets), then the CRC. A new MI each over |
 | MI words | w0 = the PI header's MI; each next word is 32 steps of the LFSR x^32 + x^22 + x^2 + x + 1 (shift left, new bit 0 = bits 31, 21, 1 and 0 XORed) |
 | IV | superframe s (0 = the one after the PI header): w(s) w(s+1) w(s+2) w(s+3), 128 bits |
 | Keystream | AES-256 in OFB mode from the IV; the first 16 octets are not used |
@@ -252,7 +250,16 @@ whose PI header was missed has no MI and is not played until the next over.
 
 Keys: 4 slots of algorithm, key ID and 32 bytes, in RAM only, set over the debug link (RADIO op 45,
 `rfoundry_debug.py radio aes-key SLOT KEY_ID HEX|@FILE`, `radio_req_dmr_aes_key`). The debug link task stages the key
-and the radio task takes it (`dmrAesStage`, `dmrAesTakeStaged`), so it lives in one place. Not yet: TX, key storage.
+and the radio task takes it (`dmrAesStage`, `dmrAesTakeStaged`), so it lives in one place. Not yet: key storage.
+
+TX: with a TX key chosen (RADIO op 46, `rfoundry_debug.py radio aes-tx SLOT|off`, `radio_req_dmr_aes_tx`), our overs
+carry FID 0x10 and the privacy option in the voice LC, one PI header after the voice LC headers, and every voice burst
+encrypted from burst A of superframe 0 (`dmr_call_config_t.tx_crypt_alg`, `tx_crypt_key_id`, `crypt_mi`). The PI header
+goes to the modem with its CRC (masked 0x6969) as a host CRC burst; a modem that makes its own CRC must use the PI
+mask. Each over takes a new MI (`dmrAesNewMi`): the TX key encrypts the key-up time, a count and the previous MI, as
+there is no hardware RNG; a repeat needs the same count and the same millisecond after a restart. If the key goes away
+during an over, its voice goes out as silence, never in the clear. A host test encrypts the decrypted capture again and
+gets the stock radio's bursts bit for bit.
 
 For bench work on such schemes, a `CONFIG_VOICE_CAPTURE` build keeps the next bursts of a call before the stack drops
 them (`core/dmr/call/dmr_burst_cap.c`): the PI header's 10 octets, the voice LC header, the voice bursts as on air and

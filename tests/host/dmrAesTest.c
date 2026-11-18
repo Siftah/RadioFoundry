@@ -216,6 +216,58 @@ static void test_stage(void)
 	CHECK(dmrAesTakeStaged(1, &k) && !k.valid, "clear staged");
 }
 
+// Our TX against the stock radio's: the captured call decrypted, then encrypted again by our TX path with the same key
+// and MI, gives the bursts the stock radio sent, bit for bit
+static void test_tx_matches_stock(void)
+{
+	dmrAesState_t st;
+	uint8_t key[32];
+	unsigned same = 0, n_bursts = sizeof(BCAP1) / sizeof(BCAP1[0]);
+
+	hex(KEY_A, key, 32);
+	dmrAesStateInit(&st);
+	dmrAesSetKey(&st, 0, DMR_AES_ALG_AES256, 1, key);
+	for (unsigned n = 0; n < n_bursts; n++) {
+		uint8_t air[27], v[27];
+		struct dmr_crypt_pos pos = { .alg = DMR_AES_ALG_AES256, .key_id = 1, .mi = 0xCD6554E0,
+					     .superframe = n / 6, .voice_index = (uint8_t)(n % 6) };
+
+		hex(BCAP1[n], air, 27);
+		memcpy(v, air, 27);
+		dmrAesCallHook(v, &pos, false, &st);
+		dmrAesCallHook(v, &pos, true, &st);
+		same += memcmp(v, air, 27) == 0;
+	}
+	CHECK(same == n_bursts, "%u of %u bursts as the stock radio sent them", same, n_bursts);
+}
+
+// The TX key and the MIs it makes
+static void test_tx_key_and_mi(void)
+{
+	dmrAesState_t st;
+	uint8_t key[32], alg = 0, key_id = 0;
+	static uint32_t seen[512];
+
+	hex(KEY_A, key, 32);
+	dmrAesStateInit(&st);
+	CHECK(!dmrAesTxKey(&st, &alg, &key_id), "no TX key");
+	CHECK(!dmrAesSetTx(&st, 1), "empty slot");
+	dmrAesSetKey(&st, 1, DMR_AES_ALG_AES256, 7, key);
+	CHECK(dmrAesSetTx(&st, 1) && dmrAesTxKey(&st, &alg, &key_id) && alg == 0x25 && key_id == 7, "TX key");
+	for (unsigned i = 0; i < 512; i++) {
+		seen[i] = dmrAesNewMi(1000, &st);	// the same time every call: the count still makes them differ
+		CHECK(seen[i] != 0, "MI 0");
+		for (unsigned j = 0; j < i; j++)
+			if (seen[j] == seen[i]) {
+				CHECK(0, "MI %u repeats %u", i, j);
+				break;
+			}
+	}
+	dmrAesSetKey(&st, 1, 0, 0, NULL);
+	CHECK(!dmrAesTxKey(&st, &alg, &key_id), "TX key cleared with its slot");
+	CHECK(dmrAesSetTx(&st, -1), "TX clear");
+}
+
 int main(void)
 {
 	test_fips197();
@@ -223,6 +275,8 @@ int main(void)
 	test_capture();
 	test_roundtrip();
 	test_stage();
+	test_tx_matches_stock();
+	test_tx_key_and_mi();
 	if (failures)
 		printf("dmrAesTest: %d FAILED\n", failures);
 	else

@@ -173,6 +173,10 @@ static struct {
 	uint8_t tx_ta_n;	// LCs in the rotation (alias and GPS)
 	uint8_t tx_gps_at;	// tx_ta index of the GPS Info, 0xFF none
 	uint8_t tx_sf;		// superframes started in this transmission
+	bool tx_pi;		// a PI header still to send (tx_crypt_alg)
+	bool tx_crypt;		// this over is encrypted with tx_mi
+	uint32_t tx_mi;
+	uint32_t tx_crypt_n;	// voice bursts queued in this over
 	uint8_t tx_emb_cur;	// what the modem spreads now: 0 the voice LC, 1 + n rotation LC n
 	bool tx_gps_set;	// dmr_call_set_tx_gps
 	dmr_gps_t tx_gps;
@@ -1021,7 +1025,7 @@ static void rx_embedded(const dmr_burst_t *b, uint32_t now)
 
 // A PI header (data type 0, TS 102 361-1 7.1.2): 80 bits of privacy information and a CRC-CCITT masked 0x6969. It
 // marks the call as protected. Its octets are read in the DMRA layout (alg, 0x10, key ID, 32-bit MI, 3 more,
-// docs/spec/dmr-voice.md 5.2) for the screens, the debug link and the MI-based schemes (dmr_crypt_fn); the static key
+// docs/spec/dmr-voice.md 5.1) for the screens, the debug link and the MI-based schemes (dmr_crypt_fn); the static key
 // schemes need none of it. It comes between the voice LC header and burst A, so the call it belongs to is usually
 // running; if not (header missed), it is held for the late entry
 static uint32_t pi_mi(const uint8_t *p)
@@ -1356,6 +1360,29 @@ static void tx_superframe_lc(void)
 		stats.tx_alias_lcs++;
 }
 
+// Our PI header (docs/spec/dmr-voice.md 5.1): algorithm, 0x10, key ID, MI, then the destination ID (the stock radios
+// sent 00 00 01 on a call to TG 1; unconfirmed whether it is the destination or a constant), the CRC masked 0x6969
+static void tx_pi_header(uint8_t pi[12])
+{
+	uint32_t dst = s.tx_target_used.id & DMR_ID_MAX;
+
+	pi[0] = s.cfg.tx_crypt_alg;
+	pi[1] = 0x10;
+	pi[2] = s.cfg.tx_crypt_key_id;
+	pi[3] = (uint8_t)(s.tx_mi >> 24);
+	pi[4] = (uint8_t)(s.tx_mi >> 16);
+	pi[5] = (uint8_t)(s.tx_mi >> 8);
+	pi[6] = (uint8_t)s.tx_mi;
+	pi[7] = (uint8_t)(dst >> 16);
+	pi[8] = (uint8_t)(dst >> 8);
+	pi[9] = (uint8_t)dst;
+
+	uint16_t crc = (uint16_t)(dmr_crc_ccitt(pi, 10) ^ DMR_CRC_MASK_PI);
+
+	pi[10] = (uint8_t)(crc >> 8);
+	pi[11] = (uint8_t)crc;
+}
+
 static void tx_fill(uint32_t now)
 {
 	while (s.tx == TX_ON) {
@@ -1370,6 +1397,16 @@ static void tx_fill(uint32_t now)
 			if (!tx_put(DMR_BURST_VOICE_LC_HEADER, 0, true, full, sizeof(full)))
 				return;
 			s.headers_left--;
+			continue;
+		}
+		if (s.tx_pi) {
+			uint8_t pi[12];
+
+			tx_pi_header(pi);
+			if (!tx_put(DMR_BURST_PI_HEADER, 0, true, pi, sizeof(pi)))
+				return;
+			s.tx_pi = false;
+			stats.tx_pi_headers++;
 			continue;
 		}
 		if (s.stop_req && s.voice_index == 0) {
@@ -1392,10 +1429,22 @@ static void tx_fill(uint32_t now)
 		uint8_t v[DMR_VOICE_BYTES];
 
 		memcpy(v, s.stage, DMR_VOICE_BYTES);
-		if (s.cfg.privacy && (s.cfg.tx_svc & DMR_SVC_PRIVACY))
+		if (s.tx_crypt) {
+			struct dmr_crypt_pos pos = { .alg = s.cfg.tx_crypt_alg, .key_id = s.cfg.tx_crypt_key_id,
+						     .mi = s.tx_mi, .superframe = s.tx_crypt_n / 6,
+						     .voice_index = s.voice_index };
+
+			if (!s.cfg.crypt(v, &pos, true, s.cfg.crypt_ctx)) {
+				// The key went away under the over: never send the voice in the clear
+				for (int f = 0; f < DMR_AMBE_FRAMES_PER_BURST; f++)
+					memcpy(&v[f * DMR_AMBE_FRAME_BYTES], dmr_ambe_silence, DMR_AMBE_FRAME_BYTES);
+			}
+		} else if (s.cfg.privacy && (s.cfg.tx_svc & DMR_SVC_PRIVACY)) {
 			s.cfg.privacy(v, s.voice_index, true, s.cfg.privacy_ctx);
+		}
 		if (!tx_put(DMR_BURST_VOICE, s.voice_index, false, v, DMR_VOICE_BYTES))
 			return;	// keep the staged frames for the next try
+		s.tx_crypt_n++;
 		s.stage_n = 0;
 		if (s.voice_index == 0 && s.tx_sf < 255)
 			s.tx_sf++;
@@ -1452,6 +1501,10 @@ static void tx_start_voice(uint32_t now)
 #endif
 	s.queue_cap = s.modem->tx_queue_space();
 	s.headers_left = DMR_CALL_TX_HEADERS;
+	s.tx_crypt = s.cfg.tx_crypt_alg != 0 && s.cfg.crypt != NULL && s.cfg.crypt_mi != NULL;
+	s.tx_pi = s.tx_crypt;
+	s.tx_mi = s.tx_crypt ? s.cfg.crypt_mi(now, s.cfg.crypt_ctx) : 0;
+	s.tx_crypt_n = 0;
 	s.voice_index = 0;
 	s.queued = s.started = 0;
 	s.stop_req = false;
