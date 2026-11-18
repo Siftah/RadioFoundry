@@ -56,7 +56,7 @@ CONFIG_DMR_TRUNK_SUPL ?= $(CONFIG_DMR_TRUNK_TX)
 CONFIG_DMR_TRUNK_GW ?= $(CONFIG_DMR_TRUNK_TX)
 # Voice capture for receive tests: the next 32 voice frames received, raw as on air, read over the debug link
 # (needs DMR; core/dmr/ambe/ambeVoice.c, debug link RADIO op 41 and the voice_cap view). Also the burst capture:
-# the next 64 bursts of a call, encrypted ones and PI headers included (core/dmr/call/dmr_burst_cap.c, op 44, burst_cap)
+# the next 32 bursts of a call, encrypted ones and PI headers included (core/dmr/call/dmr_burst_cap.c, op 44, burst_cap)
 CONFIG_VOICE_CAPTURE ?= n
 # IP over DMR packet data through a network link to the host: the USB network adapter or PPP on the serial host port
 # (needs DMR and USB_NETWORK or NET_PPP; core/hostlink/hostlink_net.c)

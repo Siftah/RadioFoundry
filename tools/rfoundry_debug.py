@@ -26,7 +26,7 @@
     rfoundry_debug.py chip                           chip ID, flash size, UID, option bytes (RDP, write protection)
     rfoundry_debug.py dump --addr A --len N -o F     read flash or another readable window to a file (debuglink.md 3.10)
     rfoundry_debug.py peek ADDR[:LEN]                hex dump of LEN bytes (default 4) at ADDR, in words where aligned
-    rfoundry_debug.py bcap arm [N]                   capture the next N (64) DMR bursts heard, encrypted calls too
+    rfoundry_debug.py bcap arm [N]                   capture the next N (32) DMR bursts heard, encrypted calls too
                                                 (CONFIG_VOICE_CAPTURE builds; RADIO op 44, view section burst_cap)
     rfoundry_debug.py bcap status                    how many were asked for and taken
     rfoundry_debug.py bcap read -o FILE.jsonl [--wait S]   the bursts as JSON lines, outside any git tree
@@ -1419,8 +1419,8 @@ class DebugLink:
         frames = [None if f == "L" else bytes.fromhex(f) for f in text.split(",") if f]
         return int(v.get("vcap.want", 0)), frames
 
-    def burst_capture(self, n=64):
-        """Capture the next n (up to 64) DMR bursts heard: PI headers, voice LC headers, terminators and voice, before
+    def burst_capture(self, n=32):
+        """Capture the next n (up to 32) DMR bursts heard: PI headers, voice LC headers, terminators and voice, before
         the call stack drops encrypted ones (RADIO op 44, CONFIG_VOICE_CAPTURE builds); 0 stops. burst_frames() reads
         them."""
         self.radio(OP_BURST_CAPTURE, bytes([0, n]))
@@ -2325,8 +2325,8 @@ BURST_KINDS = {0x10: "voice", 0x0: "pi_header", 0x1: "voice_lc_header", 0x2: "te
 
 def cmd_bcap(link, a):
     if a.op == "arm":
-        if not 0 <= a.n <= 64:
-            print("rfoundry_debug: bcap arm takes 0..64 bursts", file=sys.stderr)
+        if not 0 <= a.n <= 32:
+            print("rfoundry_debug: bcap arm takes 0..32 bursts", file=sys.stderr)
             return 2
         link.burst_capture(a.n)
         print(f"capturing the next {a.n} bursts" if a.n else "capture stopped")
@@ -2996,7 +2996,7 @@ def main(argv=None):
     p = sub.add_parser("bcap", help="DMR burst capture, encrypted calls included (CONFIG_VOICE_CAPTURE builds; "
                                     "docs/spec/debuglink.md 3.8 op 44)")
     p.add_argument("op", choices=["arm", "status", "read"])
-    p.add_argument("n", nargs="?", type=int, default=64, help="arm: bursts to capture, 1..64 (0 stops)")
+    p.add_argument("n", nargs="?", type=int, default=32, help="arm: bursts to capture, 1..32 (0 stops)")
     p.add_argument("-o", "--output", help="read: JSON lines file, outside any git tree")
     p.add_argument("--wait", type=float, default=0.0, help="read: wait up to S seconds for the capture to fill")
     p = sub.add_parser("dump")

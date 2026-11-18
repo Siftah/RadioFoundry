@@ -19,7 +19,8 @@
 #include <stdint.h>
 #include "hal_dmr_modem.h"
 
-#define DMR_BURST_CAP		64u	// bursts kept: about 3.5 s of one slot's voice
+#define DMR_BURST_CAP		32u	// bursts kept: about 1.75 s of one slot's voice (a header, the PI header and five
+					// superframes); more doesn't fit a capture build on the boards with the least RAM
 
 #define DMR_BURST_CAP_CRC_OK	0x01u	// dmr_burst_t.crc_ok
 #define DMR_BURST_CAP_PI	0x02u	// dmr_burst_t.pi (the EMB PI bit of a voice burst)
