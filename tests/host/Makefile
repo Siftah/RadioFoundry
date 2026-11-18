@@ -737,6 +737,14 @@ ambeVoiceCaptureTest: ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/dmr/a
 	$(CC) $(CFLAGS) -DCONFIG_VOICE_CAPTURE=1 -I$(ROOT)/hal -Wshadow -o $@ ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c \
 	      $(CORE)/dmr/ambe/ambeFec.c
 
+# The DMR burst capture for encryption bench work (core/dmr/call/dmr_burst_cap.c, CONFIG_VOICE_CAPTURE)
+TESTS   += dmrBurstCapTest
+dmrBurstCapTest: dmrBurstCapTest.c $(CORE)/dmr/call/dmr_burst_cap.c $(CORE)/dmr/call/dmr_burst_cap.h $(ROOT)/hal/hal_dmr_modem.h
+	$(CC) $(CFLAGS) -DCONFIG_VOICE_CAPTURE=1 -I$(ROOT)/hal -Wshadow -o $@ dmrBurstCapTest.c $(CORE)/dmr/call/dmr_burst_cap.c
+run: run-burstcap
+run-burstcap: dmrBurstCapTest
+	./dmrBurstCapTest
+
 # The mic gain setting (core/radio/mic_gain.c): to the board's hook or to DMR's sample scaling, never both
 TESTS   += micGainTest
 micGainTest: micGainTest.c $(CORE)/radio/mic_gain.c $(CORE)/radio/mic_gain.h $(ROOT)/hal/hal_radio.h

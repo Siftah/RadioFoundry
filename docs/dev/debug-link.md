@@ -43,6 +43,7 @@ there are several. `rfoundry_debug.py --help` and the module docstring list ever
 | `rfoundry_debug.py data sms ID TEXT` | Send DMR data: text, call alert, radio check, emergency; read the inbox |
 | `rfoundry_debug.py aprs ...`, `snmp ...`, `split view` | APRS, the SNMP agent, the split duplex repeater |
 | `rfoundry_debug.py log --follow` | The firmware's `dlog()` ring |
+| `rfoundry_debug.py bcap arm 64`, `bcap read -o F.jsonl --wait 5` | Capture a call's DMR bursts, encrypted ones and the full PI header included (`CONFIG_VOICE_CAPTURE` builds); the file stays outside any git tree |
 | `rfoundry_debug.py storage info` | Whether the settings region is ours or foreign |
 | `rfoundry_debug.py reboot` | Restart (needs the chip's UID as a token; refused while transmitting) |
 

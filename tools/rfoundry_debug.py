@@ -26,6 +26,10 @@
     rfoundry_debug.py chip                           chip ID, flash size, UID, option bytes (RDP, write protection)
     rfoundry_debug.py dump --addr A --len N -o F     read flash or another readable window to a file (debuglink.md 3.10)
     rfoundry_debug.py peek ADDR[:LEN]                hex dump of LEN bytes (default 4) at ADDR, in words where aligned
+    rfoundry_debug.py bcap arm [N]                   capture the next N (64) DMR bursts heard, encrypted calls too
+                                                (CONFIG_VOICE_CAPTURE builds; RADIO op 44, view section burst_cap)
+    rfoundry_debug.py bcap status                    how many were asked for and taken
+    rfoundry_debug.py bcap read -o FILE.jsonl [--wait S]   the bursts as JSON lines, outside any git tree
                                                 outside any git tree
     rfoundry_debug.py reboot [--rom-dfu]             reset; --rom-dfu: into ST's ROM USB DFU (RDP level 0 only)
     rfoundry_debug.py crash [show|clear|test trap|test assert|test hang|test stall]
@@ -201,7 +205,8 @@ PRESS, LONG, REPEAT, DOWN, UP = range(5)
 VIEW_SECTIONS = ["core", "channel", "dmr", "dmr_call", "dmr_stats", "hotspot", "link", "features", "dmr_data",
                  "storage", "dmr_ext", "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
                  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc", "net_link", "cps", "board", "audio", "t3",
-                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn"]
+                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn",
+                 "burst_cap"]
 
 OP_CHANNEL_STEP, OP_ZONE_POS, OP_ZONE, OP_VFO, OP_VFO_SET, OP_VFO_STEP, OP_POWER, OP_SQUELCH, OP_BANDWIDTH, \
     OP_TONE, OP_MONITOR, OP_CLEAR_TEMP, OP_REPLY_CANCEL, OP_HOTSPOT_EXIT, OP_DMR_TARGET, OP_DMR_CONTACT, \
@@ -226,6 +231,7 @@ OP_PA_KEYUP = 37
 OP_VFO_SFR = 38
 OP_P25 = 42
 OP_NXDN = 43
+OP_BURST_CAPTURE = 44
 P25_TALKAROUND = {"auto": 0, "on": 1, "off": 2}
 CHANNEL_MODES = {"fm": 0, "dmr": 1, "p25": 2, "nxdn": 3}
 # The VFO's SFR role names (sfrRole_t, docs/spec/sfr.md 4): off, user, user of an ERDM repeater, repeater, ERDM style
@@ -335,7 +341,7 @@ def find_cables():
 # Commands (and their ops) that only read: everything else restarts the radio or changes it
 READ_ONLY = {"hwopt": None, "reg": None, "ping": None, "version": None, "diag": None, "view": None, "screenshot": None, "log": None, "chip": None,
              "dump": None, "peek": None, "iddb": None, "crash": ("show",), "watchdog": ("show",), "rx2": ("info",),
-             "air": ("status", "tap", "rx"), "storage": ("info", "dump"), "split": ("view",),
+             "air": ("status", "tap", "rx"), "bcap": ("status", "read"), "storage": ("info", "dump"), "split": ("view",),
              "aprobe": ("status", "reg", "samples", "ram", "watch")}
 
 
@@ -1413,6 +1419,38 @@ class DebugLink:
         frames = [None if f == "L" else bytes.fromhex(f) for f in text.split(",") if f]
         return int(v.get("vcap.want", 0)), frames
 
+    def burst_capture(self, n=64):
+        """Capture the next n (up to 64) DMR bursts heard: PI headers, voice LC headers, terminators and voice, before
+        the call stack drops encrypted ones (RADIO op 44, CONFIG_VOICE_CAPTURE builds); 0 stops. burst_frames() reads
+        them."""
+        self.radio(OP_BURST_CAPTURE, bytes([0, n]))
+
+    def burst_status(self):
+        """(built, want, count) of the burst capture"""
+        v = self.view(["burst_cap"])
+        return v.get("bcap.built") == "1", int(v.get("bcap.want", 0)), int(v.get("bcap.count", 0))
+
+    def burst_frames(self):
+        """The bursts captured, in order: dicts of kind, voice_index, ts, flags, dt_ms, payload and lc (bytes)"""
+        out = []
+        while True:
+            self.radio(OP_BURST_CAPTURE, bytes([1, len(out)]))
+            v = self.view(["burst_cap"])
+            if v.get("bcap.built") != "1":
+                raise DebugLinkError("unavailable: built without CONFIG_VOICE_CAPTURE")
+            count, first = int(v.get("bcap.count", 0)), int(v.get("bcap.first", 0))
+            got = 0
+            for i in range(first, count):
+                text = v.get(f"bcap.{i}")
+                if text is None:
+                    break
+                kind, vi, ts, flags, dt, payload, lc = text.split(",")
+                out.append({"kind": int(kind), "voice_index": int(vi), "ts": int(ts), "flags": int(flags),
+                            "dt_ms": int(dt), "payload": bytes.fromhex(payload), "lc": bytes.fromhex(lc)})
+                got += 1
+            if got == 0 or len(out) >= count:
+                return out
+
     def dtmf_key(self, digit, down):
         """A DTMF key's down or up during FM TX (RADIO op 34; radio-features.md 3.7). Raises DebugLinkError "refused"
         for a down while the radio core isn't ready (features view dtmf_ready=0: not FM TX with PTT held)."""
@@ -2282,6 +2320,50 @@ def print_chip(c):
               file=sys.stderr)
 
 
+BURST_KINDS = {0x10: "voice", 0x0: "pi_header", 0x1: "voice_lc_header", 0x2: "terminator_lc"}
+
+
+def cmd_bcap(link, a):
+    if a.op == "arm":
+        if not 0 <= a.n <= 64:
+            print("rfoundry_debug: bcap arm takes 0..64 bursts", file=sys.stderr)
+            return 2
+        link.burst_capture(a.n)
+        print(f"capturing the next {a.n} bursts" if a.n else "capture stopped")
+        return 0
+    if a.op == "status":
+        built, want, count = link.burst_status()
+        print(f"built={int(built)} want={want} count={count}")
+        return 0 if built else 2
+    if not a.output:
+        print("rfoundry_debug: bcap read needs -o FILE.jsonl", file=sys.stderr)
+        return 2
+    ok, why = dump_path_ok(a.output)
+    if not ok:
+        print(f"rfoundry_debug: refusing: {why}", file=sys.stderr)
+        return 2
+    end = time.monotonic() + a.wait
+    while True:
+        built, want, count = link.burst_status()
+        if not built:
+            print("rfoundry_debug: unavailable: built without CONFIG_VOICE_CAPTURE", file=sys.stderr)
+            return 2
+        if count >= want or time.monotonic() >= end:
+            break
+        time.sleep(0.25)
+    bursts = link.burst_frames()
+    os.makedirs(os.path.dirname(os.path.abspath(a.output)), exist_ok=True)
+    with open(a.output, "w") as f:
+        for i, b in enumerate(bursts):
+            rec = {"i": i, "kind": BURST_KINDS.get(b["kind"], b["kind"]), "voice": "ABCDEF"[b["voice_index"] % 6]
+                   if b["kind"] == 0x10 else None, "ts": b["ts"], "crc_ok": bool(b["flags"] & 1),
+                   "pi": bool(b["flags"] & 2), "lc_valid": bool(b["flags"] & 4), "dt_ms": b["dt_ms"],
+                   "payload": b["payload"].hex(), "lc": b["lc"].hex() if b["flags"] & 4 else None}
+            f.write(json.dumps(rec) + "\n")
+    print(f"{len(bursts)} of {want} bursts written to {a.output}")
+    return 0
+
+
 def cmd_dump(link, a):
     addr, n = int(a.addr, 0), int(a.len, 0)
     why = mem_precheck(link, addr, n)
@@ -2911,6 +2993,12 @@ def main(argv=None):
     p = sub.add_parser("log")
     p.add_argument("--follow", action="store_true")
     sub.add_parser("chip")
+    p = sub.add_parser("bcap", help="DMR burst capture, encrypted calls included (CONFIG_VOICE_CAPTURE builds; "
+                                    "docs/spec/debuglink.md 3.8 op 44)")
+    p.add_argument("op", choices=["arm", "status", "read"])
+    p.add_argument("n", nargs="?", type=int, default=64, help="arm: bursts to capture, 1..64 (0 stops)")
+    p.add_argument("-o", "--output", help="read: JSON lines file, outside any git tree")
+    p.add_argument("--wait", type=float, default=0.0, help="read: wait up to S seconds for the capture to fill")
     p = sub.add_parser("dump")
     p.add_argument("--addr", required=True)
     p.add_argument("--len", required=True)
@@ -3041,6 +3129,8 @@ def main(argv=None):
                 return cmd_dump(link, a)
             elif a.cmd == "peek":
                 return cmd_peek(link, a)
+            elif a.cmd == "bcap":
+                return cmd_bcap(link, a)
             elif a.cmd == "reboot":
                 return cmd_reboot(link, a)
             elif a.cmd == "crash":

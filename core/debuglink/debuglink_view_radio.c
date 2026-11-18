@@ -28,6 +28,9 @@
 #endif
 #if CONFIG_DMR
 #include "dmr/ambe/ambeVoice.h"
+#if CONFIG_VOICE_CAPTURE
+#include "dmr/call/dmr_burst_cap.h"
+#endif
 #if CONFIG_ZONE_SHARE
 #include "dmr/zone_share_api.h"
 #endif
@@ -439,6 +442,21 @@ uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *a, uint16_t len)
 		return DL_ST_UNAVAILABLE;
 #endif
 	}
+	case DL_OP_BURST_CAPTURE:
+		// u8 what, u8 value: 0 = capture the next value DMR bursts (0 stops), 1 = the burst_cap view's first entry
+		if (len < 2 || a[0] > 1) {
+			return DL_ST_BAD_ARG;
+		}
+#if CONFIG_VOICE_CAPTURE
+		if (a[0] == 0) {
+			dmr_burst_cap_arm(a[1]);
+		} else {
+			dmr_burst_cap_set_page(a[1]);
+		}
+		return DL_ST_OK;
+#else
+		return DL_ST_UNAVAILABLE;
+#endif
 	case DL_OP_NXDN: {
 		// The NXDN settings (radio_nxdn_settings_t, RAM only; docs/spec/debuglink.md 3.8): u8 flags (bit 0: 9600
 		// bit/s, else 4800; bit 1: PTT calls a unit; bit 2: emergency), u8 rx_ran (0 any), u8 tx_ran, u16 rx_gid (0: the

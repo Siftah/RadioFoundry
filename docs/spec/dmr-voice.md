@@ -222,6 +222,11 @@ encrypted and its first two octets are kept for display (algorithm and key ID in
 A PI header heard just before a late entry is attached to that call. A PI header means an MI-based scheme the static
 keystream can't undo, so such a call is never played, key or not. We never send PI headers.
 
+For bench work on such schemes, a `CONFIG_VOICE_CAPTURE` build keeps the next bursts of a call before the stack drops
+them (`core/dmr/call/dmr_burst_cap.c`): the PI header's 10 octets, the voice LC header, the voice bursts as on air and
+the terminator. Read them with `rfoundry_debug.py bcap` (`debuglink.md` 3.8 op 44, view `burst_cap`). The embedded
+signaling of bursts B-F is not kept, only a complete embedded LC.
+
 The HR_C6000 reports the EMB PI bit unreliably for voice, so its driver clears it (`modem-hrc6000.md`); on that modem
 privacy is recognized from the service options and PI headers only.
 

@@ -19,6 +19,7 @@
 #include "storage/storage.h"
 #if CONFIG_VOICE_CAPTURE
 #include "dmr/ambe/ambeVoice.h"
+#include "dmr/call/dmr_burst_cap.h"
 #endif
 #if CONFIG_DMR_DATA_CORE
 #include "codeplug/codeplug_kv.h"
@@ -582,12 +583,50 @@ static void voice_cap_section(dl_text_t *t)
 #endif
 }
 
+// The DMR bursts captured (RADIO op 44), DMR_BURST_CAP_PAGE of them from the page's first: one key per burst,
+// bcap.<i>=kind,voice_index,ts,flags,dt_ms,payload hex,lc hex (docs/spec/debuglink.md 3.7)
+#if CONFIG_VOICE_CAPTURE
+static void bcap_hex(char *out, const uint8_t *in, uint8_t n)
+{
+	static const char digits[] = "0123456789abcdef";
+
+	for (uint8_t k = 0; k < n; k++) {
+		out[2 * k] = digits[in[k] >> 4];
+		out[2 * k + 1] = digits[in[k] & 0x0Fu];
+	}
+	out[2 * n] = '\0';
+}
+#endif
+
+static void burst_cap_section(dl_text_t *t)
+{
+#if CONFIG_VOICE_CAPTURE
+	const dmr_burst_cap_entry_t *e;
+	uint8_t want;
+	uint8_t n = dmr_burst_cap_get(&e, &want);
+	uint8_t first = dmr_burst_cap_page();
+
+	dl_text(t, "bcap.built=1\nbcap.want=%u\nbcap.count=%u\nbcap.first=%u\n", want, n, first);
+	for (uint8_t i = first; i < n && i < first + DMR_BURST_CAP_PAGE && !t->full; i++) {
+		char hex[2 * DMR_PAYLOAD_MAX + 1];
+		char lc[2 * sizeof e[i].lc + 1];
+
+		bcap_hex(hex, e[i].payload, e[i].len);
+		bcap_hex(lc, e[i].lc, sizeof e[i].lc);
+		dl_text(t, "bcap.%u=%u,%u,%d,%u,%u,%s,%s\n", i, e[i].kind, e[i].voice_index, e[i].ts, e[i].flags,
+			e[i].dt_ms, hex, lc);
+	}
+#else
+	dl_text(t, "bcap.built=0\n");
+#endif
+}
+
 static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dmr", "dmr_call", "dmr_stats", "hotspot",
 						  "link", "features", "dmr_data", "storage", "dmr_ext",
 						  "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
 						  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc",
 						  "net_link", "cps", "board", "audio", "t3", "t3_svc", "t3_roam", "voice_cap", "t3_msg",
-						  "t3_ra", "p25", "p25_trunk", "nxdn" };
+						  "t3_ra", "p25", "p25_trunk", "nxdn", "burst_cap" };
 
 const char *debuglink_view_name(uint8_t section)
 {
@@ -724,6 +763,9 @@ void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t
 		break;
 	case DL_VIEW_NXDN:
 		debuglink_view_nxdn(v, t);
+		break;
+	case DL_VIEW_BURST_CAP:
+		burst_cap_section(t);
 		break;
 	case DL_VIEW_USRP:
 #if CONFIG_NET_USRP

@@ -15,6 +15,9 @@
 #include "dmr/ambe/ambeFec.h"
 #define SFR_DUALPATH_DEPTH	3	// bursts held: the repeat of the first comes 90 ms later, after the talker's next
 #endif
+#if CONFIG_VOICE_CAPTURE
+#include "dmr/call/dmr_burst_cap.h"
+#endif
 
 // RX trace into the debug link's log (see dmr_call.h). Host tests that don't link dlog build with DMR_RX_TRACE=0
 #ifndef DMR_RX_TRACE
@@ -1043,6 +1046,9 @@ static void rx_burst(const dmr_burst_t *b, uint32_t now, uint32_t slot)
 		s.rpt_seen = true;
 		s.rpt_bursts = true;
 	}
+#if CONFIG_VOICE_CAPTURE
+	dmr_burst_cap_put(b, now);	// before the slot filter and the privacy checks: encrypted calls too
+#endif
 	if (s.rx_tap && s.rx_tap(b, now, s.rx_tap_ctx))
 		return;
 	bool slot_known = ts_known(b);
