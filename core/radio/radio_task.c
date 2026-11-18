@@ -16,6 +16,9 @@
 #endif
 #if CONFIG_DMR
 #include "dmr/call/dmr_call.h"
+#if CONFIG_DMR_AES
+#include "dmr/dmrAes.h"
+#endif
 #endif
 #if CONFIG_DMR_DATA_CORE
 #include "dmr/dmrDataService.h"
@@ -431,6 +434,13 @@ void radio_req_dmr_focus(uint32_t id, bool private_call)
 }
 #if CONFIG_DMR_PRIVACY
 void radio_req_dmr_privacy(uint8_t type, uint16_t key) { post(RREQ_DMR_PRIVACY, (int32_t)(((uint32_t)type << 16) | key), 0); }
+#if CONFIG_DMR_AES
+void radio_req_dmr_aes_key(uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[32])
+{
+	dmrAesStage(slot, alg, key_id, key);
+	post(RREQ_DMR_AES_KEY, slot, 0);
+}
+#endif
 #endif
 #endif
 

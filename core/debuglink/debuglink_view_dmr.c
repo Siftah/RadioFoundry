@@ -129,7 +129,7 @@ void debuglink_view_dmr(uint8_t part, const radio_view_t *v, dl_text_t *t)
 		call(t, "call", &d->call);
 		dl_text(t, "call.late_entry=%u\n", d->late_entry);
 		dl_text(t, "call.alias_complete=%u\n", cv->caller.alias_complete);
-		dl_text(t, "call.fid=%u\ncall.svc=%u\ncall.pi_alg=%u\ncall.pi_key=%u\ncall.pi_mi=%08lX\n", cv->caller.fid,
+		dl_text(t, "call.fid=%u\ncall.svc=%u\ncall.pi_alg=%u\ncall.pi_key=%u\ncall.pi_mi=%08lx\n", cv->caller.fid,
 			cv->caller.svc, cv->caller.pi_alg, cv->caller.pi_key, (unsigned long)cv->caller.pi_mi);
 		dl_text_kv_str(t, "call.alias", d->alias);
 		dl_text(t, "call.rssi_dbm=%d\ncall.ms=%u\n", d->rssi_dbm, (unsigned)d->call_ms);

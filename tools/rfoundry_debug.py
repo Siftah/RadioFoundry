@@ -232,6 +232,7 @@ OP_VFO_SFR = 38
 OP_P25 = 42
 OP_NXDN = 43
 OP_BURST_CAPTURE = 44
+OP_DMR_AES_KEY = 45
 P25_TALKAROUND = {"auto": 0, "on": 1, "off": 2}
 CHANNEL_MODES = {"fm": 0, "dmr": 1, "p25": 2, "nxdn": 3}
 # The VFO's SFR role names (sfrRole_t, docs/spec/sfr.md 4): off, user, user of an ERDM repeater, repeater, ERDM style
@@ -1273,6 +1274,16 @@ class DebugLink:
         """Load a basic privacy key in RAM: kind off | moto (key 1-255) | anytone (key 0-65535)."""
         self.radio(OP_DMR_PRIVACY, struct.pack("<BH", PRIVACY_TYPES[kind] if isinstance(kind, str) else kind, key))
 
+    def dmr_aes_key(self, slot, key_id, key):
+        """Load AES-256 key slot 0..3 in RAM for calls with a PI header of ALG 0x25 and this key ID; key None clears
+        the slot (RADIO op 45, docs/spec/dmr-voice.md 5.2)."""
+        if key is None:
+            self.radio(OP_DMR_AES_KEY, bytes([slot, 0, 0]))
+            return
+        if len(key) != 32:
+            raise ValueError("an AES-256 key is 32 bytes")
+        self.radio(OP_DMR_AES_KEY, bytes([slot, 0x25, key_id]) + bytes(key))
+
     def usb_network(self, on):
         """Switch the USB personality after the reply: network adapter (CDC-NCM) or serial port. The radio
         re-enumerates; in network mode the debug link answers over UDP (--port udp:<radio IP>)."""
@@ -1978,6 +1989,18 @@ def cmd_radio(link, a):
         link.dmr_target_clear()
     elif op == "privacy":             # privacy off | moto KEY | anytone KEY
         link.dmr_privacy(args[0], int(args[1], 0) if len(args) > 1 else 0)
+    elif op == "aes-key":             # aes-key SLOT off | aes-key SLOT KEY_ID HEX|@FILE (64 hex digits)
+        if len(args) == 2 and args[1] == "off":
+            link.dmr_aes_key(int(args[0], 0), 0, None)
+        elif len(args) == 3:
+            text = args[2]
+            if text.startswith("@"):  # from a file: keeps the key out of the shell history
+                with open(text[1:]) as f:
+                    text = f.read()
+            key = bytes.fromhex("".join(text.split()))
+            link.dmr_aes_key(int(args[0], 0), int(args[1], 0), key)
+        else:
+            raise SystemExit("radio aes-key SLOT off | radio aes-key SLOT KEY_ID HEX|@FILE")
     elif op == "scan":                # scan stop|zone|vfo|dual POS|cancel|nuisance|toggle|select a|b
         if args[:1] == ["select"]:
             if len(args) < 2 or args[1].lower() not in ("a", "b"):
@@ -2974,7 +2997,7 @@ def main(argv=None):
     p = sub.add_parser("radio")
     p.add_argument("op", choices=["channel", "pos", "zone", "vfo", "freq", "step", "power", "squelch", "bw", "tone",
                                   "monitor", "clear", "reply-cancel", "hotspot-exit", "target", "contact", "call-back",
-                                  "target-clear", "privacy", "scan", "scan-vfo", "beep", "burst", "set", "usb",
+                                  "target-clear", "privacy", "aes-key", "scan", "scan-vfo", "beep", "burst", "set", "usb",
                                   "usb-settings", "ppp", "vibrate", "mode", "cc", "ts", "sfr", "copy-vfo", "voice-test", "dtmf",
                                   "tx-limit", "tx-drive", "pa-keyup", "pa-sweep", "pa-keyrun", "p25", "nxdn"])
     p.add_argument("args", nargs="*")

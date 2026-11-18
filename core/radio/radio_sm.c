@@ -28,6 +28,9 @@
 #endif
 #if CONFIG_DMR_PRIVACY
 #include "dmr/dmrPrivacy.h"
+#if CONFIG_DMR_AES
+#include "dmr/dmrAes.h"
+#endif
 #endif
 #include "radio/beep.h"	// beep_t (beep_play only with CONFIG_BEEP)
 #include "radio/vibe.h"	// vibe_t (vibe_play only with CONFIG_VIBRATE)
@@ -1336,6 +1339,10 @@ static void dmr_load_channel(radio_sm_t *sm)
 #if CONFIG_DMR_PRIVACY
 static dmrPrivacyKey_t privacy_key;	// the call stack's privacy hook context (radio task only)
 #endif
+#if CONFIG_DMR_AES
+static dmrAesState_t aes_keys;		// the AES keyring and keystream cache, the crypt hook's context (radio task only)
+static bool aes_ready;
+#endif
 
 // Hang time (ms) as the call stack's reply window (whole seconds, rounded up); 0 keeps the stack's default
 static uint8_t hang_s(uint16_t ms, uint8_t dflt)
@@ -1449,6 +1456,13 @@ static void dmr_configure(radio_sm_t *sm)
 		cfg.privacy_ctx = &privacy_key;
 		cfg.tx_fid = dmrPrivacyFID(privacy_key.type, cfg.tx_fid);
 		cfg.tx_svc = dmrPrivacyServiceOptions(privacy_key.type, cfg.tx_svc);
+	}
+#endif
+#if CONFIG_DMR_AES
+	// Calls with a PI header (receive only for now: docs/spec/dmr-voice.md 5.2)
+	if (aes_ready && dmrAesHasKeys(&aes_keys)) {
+		cfg.crypt = dmrAesCallHook;
+		cfg.crypt_ctx = &aes_keys;
 	}
 #endif
 #if CONFIG_DMR_EMERGENCY
@@ -7994,6 +8008,24 @@ void radio_sm_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms)
 			dmr_configure(sm);
 		}
 		changed(sm);
+		break;
+	}
+#endif
+#if CONFIG_DMR_AES
+	case RREQ_DMR_AES_KEY: {
+		dmrAesKey_t k;
+
+		if (!aes_ready) {
+			dmrAesStateInit(&aes_keys);
+			aes_ready = true;
+		}
+		if (dmrAesTakeStaged((uint8_t)req->arg, &k)) {
+			dmrAesSetKey(&aes_keys, (uint8_t)req->arg, k.valid ? k.alg : 0, k.key_id, k.key);
+			memset(&k, 0, sizeof(k));
+			if (sm->dmr_running)
+				dmr_configure(sm);
+			changed(sm);
+		}
 		break;
 	}
 #endif

@@ -218,20 +218,23 @@ and loads the active slot at boot (`settings-store.md` 3.1); the open-firmware c
 set it.
 
 PI header (data type 0, CRC-CCITT masked 0x6969): heard between the voice LC header and burst A, it marks the call
-encrypted. Its algorithm ID (octet 0), key ID (octet 2) and MI (octets 3-6) are kept for display (`pi_alg`, `pi_key`,
-`pi_mi`); octet 1 is not interpreted (0x10 from the radios measured, their FID). A PI header heard just before a late
-entry is attached to that call. A PI header means an MI-based scheme the static keystream can't undo, so such a call
-is never played, key or not. We never send PI headers.
+encrypted. Its algorithm ID (octet 0), key ID (octet 2) and MI (octets 3-6) go to the caller info (`pi_alg`,
+`pi_key`, `pi_mi`); octet 1 is not interpreted (0x10 from the radios measured, their FID). A PI header heard just
+before a late entry is attached to that call, and a call that fades and resumes by late entry keeps its PI header. The
+static keystream can't undo an MI-based scheme, so such a call plays only through the crypt hook (`dmr_crypt_fn`,
+5.1) with a key for its algorithm and key ID; otherwise it is dropped as `rx_enc_dropped`. We never send PI headers
+yet.
 
 ### 5.1 AES-256 with a message indicator
 
-The scheme behind PI headers with algorithm ID 0x25, as stock radios send it. Measured on the SDR bench and checked
-against a reference decoder used as a black box; `core/dmr/dmrAes.c` implements the receive side and
-`tests/host/dmrAesTest.c` decrypts a captured call with it. Not yet wired into the receive path.
+The scheme behind PI headers with algorithm ID 0x25, as stock radios send it (`CONFIG_DMR_AES`, `core/dmr/dmrAes.c`,
+receive only). Measured on the SDR bench and checked against a reference decoder used as a black box;
+`tests/host/dmrAesTest.c` decrypts a captured call with it.
 
 | Part | Layout |
 |---|---|
-| PI header | octet 0 algorithm ID (0x25), 1 not interpreted, 2 key ID, 3-6 MI (most significant octet first), 7-9 not interpreted, then the CRC |
+| Voice LC | FID 0x10, service options 0x40 (privacy) |
+| PI header | octet 0 algorithm ID (0x25), 1 not interpreted, 2 key ID, 3-6 MI (most significant octet first), 7-9 not interpreted (`00 00 01` seen), then the CRC. A new MI each over |
 | MI words | w0 = the PI header's MI; each next word is 32 steps of the LFSR x^32 + x^22 + x^2 + x + 1 (shift left, new bit 0 = bits 31, 21, 1 and 0 XORed) |
 | IV | superframe s (0 = the one after the PI header): w(s) w(s+1) w(s+2) w(s+3), 128 bits |
 | Keystream | AES-256 in OFB mode from the IV; the first 16 octets are not used |
@@ -240,6 +243,16 @@ against a reference decoder used as a black box; `core/dmr/dmrAes.c` implements 
 The embedded LC and talker alias stay in the clear, and every superframe's embedded signaling repeats the algorithm
 and key ID for late entry. The radios measured encrypt whatever their vocoder held before the call in bursts A and
 B of the first superframe; that decrypts like any other frame.
+
+The call stack (`dmr_call.c`) counts bursts from burst A of superframe 0 and hands the hook the PI header's algorithm,
+key ID and MI with the burst's superframe. A burst index seen again without being a repeat is a superframe on; bursts
+lost in a row are counted from the modem's slot counter (2 slots a burst) or, without one, from the time (60 ms a
+burst). A late entry after the PI header is placed by the time since it, to the nearest burst with its index. A call
+whose PI header was missed has no MI and is not played until the next over.
+
+Keys: 4 slots of algorithm, key ID and 32 bytes, in RAM only, set over the debug link (RADIO op 45,
+`rfoundry_debug.py radio aes-key SLOT KEY_ID HEX|@FILE`, `radio_req_dmr_aes_key`). The debug link task stages the key
+and the radio task takes it (`dmrAesStage`, `dmrAesTakeStaged`), so it lives in one place. Not yet: TX, key storage.
 
 For bench work on such schemes, a `CONFIG_VOICE_CAPTURE` build keeps the next bursts of a call before the stack drops
 them (`core/dmr/call/dmr_burst_cap.c`): the PI header's 10 octets, the voice LC header, the voice bursts as on air and

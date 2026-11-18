@@ -125,6 +125,10 @@ static struct {
 	uint32_t pi_pending_ms;
 	uint8_t pi_pending_alg, pi_pending_key;
 	uint32_t pi_pending_mi;
+	// where the call's bursts sit in the PI header's keystream (dmr_crypt_fn)
+	bool crypt_have;	// crypt_n is known
+	uint32_t crypt_n;	// the last burst played, counted from burst A of superframe 0
+	uint32_t crypt_pi_ms;	// the PI header heard
 
 	// repeater outbound
 	uint32_t rpt_last_ms;
@@ -646,14 +650,20 @@ static void rx_lc(const uint8_t lc[DMR_LC_BYTES], const dmr_burst_t *b, bool lat
 	memcpy(c->alias, s.ta.text, sizeof(c->alias));
 	c->alias_complete = s.ta.complete;
 	if (!continuing) {
-		c->pi_header = false;
-		c->pi_alg = c->pi_key = 0;
-		c->pi_mi = 0;
+		// A resumed call keeps its PI header: the talker sends one per over, and the keystream runs on from it
+		if (!resumed) {
+			c->pi_header = false;
+			c->pi_alg = c->pi_key = 0;
+			c->pi_mi = 0;
+			s.crypt_have = false;
+		}
 		if (s.pi_pending && !elapsed(now, s.pi_pending_ms, true, fade_ms())) {
 			c->pi_header = true;	// heard just before the call was acquired
 			c->pi_alg = s.pi_pending_alg;
 			c->pi_key = s.pi_pending_key;
 			c->pi_mi = s.pi_pending_mi;
+			s.crypt_pi_ms = s.pi_pending_ms;
+			s.crypt_have = false;
 			c->encrypted = true;
 		}
 #if CONFIG_SFR
@@ -708,6 +718,45 @@ static void rx_recheck(uint32_t now)
 	s.dirty = true;
 }
 
+// The burst number (from burst A of superframe 0, the one after the PI header) of burst i about to play: the next one
+// with that index, plus whole superframes when the slot counter (2 slots a burst) or the time (60 ms a burst) says some
+// went by unheard. The first burst after the PI header is placed by the time since it, to the nearest burst with its
+// index (a late entry starts a superframe or two in)
+static void crypt_advance(uint8_t i, uint32_t now, uint32_t slot)
+{
+	int32_t est;
+	uint32_t n;
+
+	if (!s.crypt_have) {
+		est = (int32_t)((now - s.crypt_pi_ms) / VOICE_PERIOD_MS) - 1;
+		n = i;
+		while ((int32_t)n + 3 <= est)
+			n += 6;
+	} else {
+		uint8_t d = (uint8_t)((i + 6 - s.crypt_n % 6) % 6);
+
+		if (d == 0)
+			d = 6;	// the same index again and not a repeat: a whole superframe went by
+		est = slot != 0 && s.last_voice_slot != 0
+			? (int32_t)((slot - s.last_voice_slot) / 2)
+			: (int32_t)((now - s.last_voice_ms + VOICE_PERIOD_MS / 2) / VOICE_PERIOD_MS);
+		n = s.crypt_n + d;
+		while ((int32_t)(n - s.crypt_n) + 3 <= est)
+			n += 6;
+	}
+	s.crypt_n = n;
+	s.crypt_have = true;
+}
+
+static bool crypt_rx(uint8_t v[DMR_VOICE_BYTES], uint8_t i)
+{
+	const dmr_caller_t *c = &s.view.caller;
+	struct dmr_crypt_pos pos = { .alg = c->pi_alg, .key_id = c->pi_key, .mi = c->pi_mi,
+				     .superframe = s.crypt_n / 6, .voice_index = i };
+
+	return s.cfg.crypt(v, &pos, false, s.cfg.crypt_ctx);
+}
+
 // slot: the modem's slot counter for the burst (0 = none). Bursts may arrive in batches, so a repeat is told by the
 // burst index and the slot counter, never by arrival time (that is only the fallback for a modem without a counter)
 static void rx_play(const dmr_burst_t *b, uint32_t now, uint32_t slot)
@@ -732,6 +781,8 @@ static void rx_play(const dmr_burst_t *b, uint32_t now, uint32_t slot)
 		}
 		sink_lost((uint8_t)(missing * DMR_AMBE_FRAMES_PER_BURST));
 	}
+	if (s.view.caller.pi_header)
+		crypt_advance(i, now, slot);
 	s.next_index = (uint8_t)((i + 1) % 6);
 	s.have_index = true;
 	s.last_voice_ms = now;
@@ -744,18 +795,19 @@ static void rx_play(const dmr_burst_t *b, uint32_t now, uint32_t slot)
 		stats.rx_encrypted_calls++;
 		s.dirty = true;
 	}
-	// No key, or a PI header: an MI-based scheme the static key hook can't undo (docs/spec/gotchas.md 6.4)
-	if (enc && (!s.cfg.privacy || s.view.caller.pi_header)) {
-		stats.rx_enc_dropped++;
-		TR_WHAT('e');
-		sink_lost(DMR_AMBE_FRAMES_PER_BURST);	// no key: never play the scrambled voice
-		return;
-	}
-
 	uint8_t v[DMR_VOICE_BYTES];
+	bool pi = s.view.caller.pi_header;
 
 	memcpy(v, b->payload, DMR_VOICE_BYTES);
-	if (enc)
+	// A PI header: an MI-based scheme (docs/spec/gotchas.md 6.4) the static key hook can't undo, the crypt hook may.
+	// No key: never play the scrambled voice
+	if (enc && (pi ? !s.cfg.crypt || !crypt_rx(v, i) : !s.cfg.privacy)) {
+		stats.rx_enc_dropped++;
+		TR_WHAT('e');
+		sink_lost(DMR_AMBE_FRAMES_PER_BURST);
+		return;
+	}
+	if (enc && !pi)
 		s.cfg.privacy(v, i, false, s.cfg.privacy_ctx);
 	stats.rx_voice_bursts++;
 	TR_WHAT('p');
@@ -968,9 +1020,15 @@ static void rx_embedded(const dmr_burst_t *b, uint32_t now)
 }
 
 // A PI header (data type 0, TS 102 361-1 7.1.2): 80 bits of privacy information and a CRC-CCITT masked 0x6969. It
-// marks the call as protected; the octets are kept for the screens and the debug link but not interpreted (the
-// static key schemes need none, MI-based ones would, docs/spec/gotchas.md 6.4). It comes between the voice LC header
-// and burst A, so the call it belongs to is usually running; if not (header missed), it is held for the late entry
+// marks the call as protected. Its octets are read in the DMRA layout (alg, 0x10, key ID, 32-bit MI, 3 more,
+// docs/spec/dmr-voice.md 5.2) for the screens, the debug link and the MI-based schemes (dmr_crypt_fn); the static key
+// schemes need none of it. It comes between the voice LC header and burst A, so the call it belongs to is usually
+// running; if not (header missed), it is held for the late entry
+static uint32_t pi_mi(const uint8_t *p)
+{
+	return ((uint32_t)p[3] << 24) | ((uint32_t)p[4] << 16) | ((uint32_t)p[5] << 8) | p[6];
+}
+
 static void rx_pi_header(const dmr_burst_t *b, uint32_t now)
 {
 	bool ok = b->crc_ok;
@@ -980,19 +1038,15 @@ static void rx_pi_header(const dmr_burst_t *b, uint32_t now)
 
 		ok = b->payload[10] == (uint8_t)(crc >> 8) && b->payload[11] == (uint8_t)crc;
 	}
-	if (!ok || b->len < 7)
+	if (!ok || b->len < 10)
 		return;
 	stats.rx_pi_headers++;
-	// DMRA layout, as the stock radios send it (dmr-voice.md 5): algorithm, an octet not interpreted, key ID, MI
-	uint32_t mi = ((uint32_t)b->payload[3] << 24) | ((uint32_t)b->payload[4] << 16) | ((uint32_t)b->payload[5] << 8) |
-		      b->payload[6];
-
 	if (s.rx == RXC_NONE) {
 		s.pi_pending = true;
 		s.pi_pending_ms = now;
 		s.pi_pending_alg = b->payload[0];
 		s.pi_pending_key = b->payload[2];
-		s.pi_pending_mi = mi;
+		s.pi_pending_mi = pi_mi(b->payload);
 		return;
 	}
 
@@ -1003,8 +1057,10 @@ static void rx_pi_header(const dmr_burst_t *b, uint32_t now)
 	c->pi_header = true;
 	c->pi_alg = b->payload[0];
 	c->pi_key = b->payload[2];
-	c->pi_mi = mi;
+	c->pi_mi = pi_mi(b->payload);
 	c->encrypted = true;
+	s.crypt_have = false;	// a new MI: superframe 0 starts at the next burst A
+	s.crypt_pi_ms = now;
 	s.dirty = true;
 }
 

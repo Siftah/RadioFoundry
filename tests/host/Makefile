@@ -745,10 +745,11 @@ run: run-burstcap
 run-burstcap: dmrBurstCapTest
 	./dmrBurstCapTest
 
-# DMR AES-256 voice decryption (core/dmr/dmrAes.c): FIPS-197, the MI words and a captured stock radio call
+# DMR AES-256 voice decryption (core/dmr/dmrAes.c): FIPS-197, the MI words, a captured stock radio call, the hook
 TESTS   += dmrAesTest
-dmrAesTest: dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrAes.h $(CORE)/dmr/ambe/ambeFec.c
-	$(CC) $(CFLAGS) -Wshadow -o $@ dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/ambe/ambeFec.c
+dmrAesTest: dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrAes.h $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/ambe/ambeFec.c
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrPrivacy.c \
+		$(CORE)/dmr/ambe/ambeFec.c
 run: run-aes
 run-aes: dmrAesTest
 	./dmrAesTest

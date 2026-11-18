@@ -587,6 +587,9 @@ void radio_req_dmr_focus(uint32_t id, bool private_call);
 #if CONFIG_DMR_PRIVACY
 // Load a basic privacy key (type dmrPrivacyType_t, 0 = off). Held in RAM until changed or the radio restarts
 void radio_req_dmr_privacy(uint8_t type, uint16_t key);
+// Load (alg 0x25) or clear (alg 0) AES key slot 0..3 for calls with a PI header of that algorithm and key ID
+// (CONFIG_DMR_AES; docs/spec/dmr-voice.md 5.1). Held in RAM only, until changed or the radio restarts
+void radio_req_dmr_aes_key(uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[32]);
 #endif
 #endif
 // Scan (CONFIG_SCAN; no-ops otherwise). A zone scan starts from the current channel, a VFO scan steps the VFO by its

@@ -419,9 +419,9 @@ A; it is unverified on the HR_C5000 and HR_C7000.
 **6.3 ISR-safe contact lookup.** The privacy contact's ID must come from a cache that is safe to read in the modem ISR.
 
 **6.4 PI headers carry the MI.** MI-based schemes need the modem to send and receive a PI header (data type 0). The
-call stack receives them and keeps the algorithm, key ID and MI (dmr-voice.md 5, 5.1). A call joined late, PI header
-missed, has no MI: the embedded signaling repeats only the algorithm and key ID, so it can't be decrypted until the
-next PI header. Sending one is untested.
+call stack receives them and keeps the algorithm, key ID and MI; such a call plays only through the crypt hook with a
+key for them (dmr-voice.md 5, 5.1). A call joined late, PI header missed, has no MI: the embedded signaling repeats
+only the algorithm and key ID, so it can't be decrypted until the next PI header. Sending one is untested.
 
 ## 7. ARS, TMS, LRRP, UDT
 

@@ -1,47 +1,56 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// DMR AES-256 voice encryption, receive side (dmrAes.h). The cipher is FIPS-197, written from the standard.
+/*
+ * DMR voice encryption with AES-256 (docs/spec/dmr-voice.md 5.1). The AES core is written from FIPS-197; the DMRA
+ * keystream layout was worked out on the bench from on-air captures (no other implementation's source was used).
+ */
 
 #include <string.h>
 #include "dmr/dmrAes.h"
+#include "dmr/dmrPrivacy.h"
+#include "dmr/ambe/ambeFec.h"
+#include "dmr/call/dmr_call.h"
+
+// --- AES-256, FIPS-197 ---
 
 static const uint8_t SBOX[256] = {
-	0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
-	0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
-	0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
-	0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
-	0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0, 0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
-	0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
-	0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
-	0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5, 0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
-	0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
-	0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
-	0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C, 0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
-	0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
-	0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
-	0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E, 0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
-	0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
-	0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
+	0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+	0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+	0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+	0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+	0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+	0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+	0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+	0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+	0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+	0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+	0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+	0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+	0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+	0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+	0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+	0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 };
 
-#define NK	8	// key words (AES-256)
-#define NR	14	// rounds
+#define AES256_NK	8
+#define AES256_NR	14
 
-static uint8_t xtime(uint8_t a)
+static uint8_t xtime(uint8_t x)
 {
-	return (uint8_t)((a << 1) ^ ((a & 0x80u) ? 0x1Bu : 0u));
+	return (uint8_t)((x << 1) ^ ((x & 0x80) ? 0x1b : 0));
 }
 
-void dmrAesKeyExpand(dmrAesKey_t *k, const uint8_t key[DMR_AES_KEY_BYTES])
+void aes256Init(aes256_ctx_t *ctx, const uint8_t key[DMR_AES_KEY_BYTES])
 {
+	uint8_t *w = ctx->rk;
 	uint8_t rcon = 1;
 
-	memcpy(k->rk, key, DMR_AES_KEY_BYTES);
-	for (unsigned i = NK; i < 4u * (NR + 1u); i++) {
+	memcpy(w, key, DMR_AES_KEY_BYTES);
+	for (int i = AES256_NK; i < 4 * (AES256_NR + 1); i++) {
 		uint8_t t[4];
 
-		memcpy(t, &k->rk[4u * (i - 1u)], 4);
-		if (i % NK == 0) {
+		memcpy(t, &w[(i - 1) * 4], 4);
+		if (i % AES256_NK == 0) {
 			uint8_t t0 = t[0];
 
 			t[0] = (uint8_t)(SBOX[t[1]] ^ rcon);
@@ -49,89 +58,230 @@ void dmrAesKeyExpand(dmrAesKey_t *k, const uint8_t key[DMR_AES_KEY_BYTES])
 			t[2] = SBOX[t[3]];
 			t[3] = SBOX[t0];
 			rcon = xtime(rcon);
-		} else if (i % NK == 4) {
-			for (unsigned j = 0; j < 4; j++)
-				t[j] = SBOX[t[j]];
+		} else if (i % AES256_NK == 4) {
+			for (int k = 0; k < 4; k++)
+				t[k] = SBOX[t[k]];
 		}
-		for (unsigned j = 0; j < 4; j++)
-			k->rk[4u * i + j] = (uint8_t)(k->rk[4u * (i - NK) + j] ^ t[j]);
+		for (int k = 0; k < 4; k++)
+			w[i * 4 + k] = (uint8_t)(w[(i - AES256_NK) * 4 + k] ^ t[k]);
 	}
 }
 
-void dmrAesEncryptBlock(const dmrAesKey_t *k, const uint8_t in[16], uint8_t out[16])
+void aes256Encrypt(const aes256_ctx_t *ctx, const uint8_t in[16], uint8_t out[16])
 {
 	uint8_t s[16];
 
-	for (unsigned i = 0; i < 16; i++)
-		s[i] = (uint8_t)(in[i] ^ k->rk[i]);
-	for (unsigned r = 1; r <= NR; r++) {
+	for (int i = 0; i < 16; i++)
+		s[i] = (uint8_t)(in[i] ^ ctx->rk[i]);
+	for (int r = 1; r <= AES256_NR; r++) {
 		uint8_t t[16];
 
-		// SubBytes and ShiftRows: the state is column major, row i of column c at 4c + i
-		for (unsigned c = 0; c < 4; c++)
-			for (unsigned i = 0; i < 4; i++)
-				t[4u * c + i] = SBOX[s[4u * ((c + i) & 3u) + i]];
-		if (r != NR) {
-			for (unsigned c = 0; c < 4; c++) {	// MixColumns
-				uint8_t *p = &t[4u * c];
-				uint8_t a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3], x = (uint8_t)(a0 ^ a1 ^ a2 ^ a3);
+		// SubBytes and ShiftRows (the state is column-major: byte 4c + row)
+		for (int c = 0; c < 4; c++)
+			for (int row = 0; row < 4; row++)
+				t[4 * c + row] = SBOX[s[4 * ((c + row) & 3) + row]];
+		if (r != AES256_NR) {
+			// MixColumns
+			for (int c = 0; c < 4; c++) {
+				uint8_t *col = &t[4 * c];
+				uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
+				uint8_t all = (uint8_t)(a0 ^ a1 ^ a2 ^ a3);
 
-				p[0] = (uint8_t)(a0 ^ x ^ xtime((uint8_t)(a0 ^ a1)));
-				p[1] = (uint8_t)(a1 ^ x ^ xtime((uint8_t)(a1 ^ a2)));
-				p[2] = (uint8_t)(a2 ^ x ^ xtime((uint8_t)(a2 ^ a3)));
-				p[3] = (uint8_t)(a3 ^ x ^ xtime((uint8_t)(a3 ^ a0)));
+				col[0] = (uint8_t)(a0 ^ all ^ xtime((uint8_t)(a0 ^ a1)));
+				col[1] = (uint8_t)(a1 ^ all ^ xtime((uint8_t)(a1 ^ a2)));
+				col[2] = (uint8_t)(a2 ^ all ^ xtime((uint8_t)(a2 ^ a3)));
+				col[3] = (uint8_t)(a3 ^ all ^ xtime((uint8_t)(a3 ^ a0)));
 			}
 		}
-		for (unsigned i = 0; i < 16; i++)
-			s[i] = (uint8_t)(t[i] ^ k->rk[16u * r + i]);
+		for (int i = 0; i < 16; i++)
+			s[i] = (uint8_t)(t[i] ^ ctx->rk[16 * r + i]);
 	}
 	memcpy(out, s, 16);
 }
 
+// --- The DMRA scheme ---
+
 uint32_t dmrAesMiNext(uint32_t w)
 {
-	for (unsigned i = 0; i < 32; i++) {
-		uint32_t fb = ((w >> 31) ^ (w >> 21) ^ (w >> 1) ^ w) & 1u;
+	for (int i = 0; i < 32; i++) {
+		uint32_t t = w & 0x80200003u;
 
-		w = (w << 1) | fb;
+		t ^= t >> 16;
+		t ^= t >> 8;
+		t ^= t >> 4;
+		t ^= t >> 2;
+		t ^= t >> 1;
+		w = (w << 1) | (t & 1u);
 	}
 	return w;
 }
 
-void dmrAesSuperframeIv(uint32_t pi_mi, uint16_t s, uint8_t iv[16])
+void dmrAesIv(uint32_t mi, uint32_t sf, uint8_t iv[16])
 {
-	uint32_t w = pi_mi;
+	uint32_t w = mi;
 
-	while (s--)
+	for (uint32_t n = 0; n < sf; n++)
 		w = dmrAesMiNext(w);
-	for (unsigned i = 0; i < 4; i++) {
-		iv[4u * i] = (uint8_t)(w >> 24);
-		iv[4u * i + 1u] = (uint8_t)(w >> 16);
-		iv[4u * i + 2u] = (uint8_t)(w >> 8);
-		iv[4u * i + 3u] = (uint8_t)w;
+	for (int k = 0; k < 4; k++) {
+		iv[4 * k] = (uint8_t)(w >> 24);
+		iv[4 * k + 1] = (uint8_t)(w >> 16);
+		iv[4 * k + 2] = (uint8_t)(w >> 8);
+		iv[4 * k + 3] = (uint8_t)w;
 		w = dmrAesMiNext(w);
 	}
 }
 
-void dmrAesKeystream(const dmrAesKey_t *k, const uint8_t iv[16], uint8_t ks[DMR_AES_KS_BYTES])
+void dmrAesBurstKeystream(const aes256_ctx_t *ctx, const uint8_t iv[16], uint8_t voice_index,
+			  uint8_t ks[DMR_AES_BURST_KS_BYTES])
 {
-	uint8_t b[16];
-	unsigned n = 0;
+	uint8_t block[16];
+	unsigned from = DMR_AES_SF_SKIP_BYTES + (unsigned)(voice_index % 6) * DMR_AES_BURST_KS_BYTES;
+	unsigned to = from + DMR_AES_BURST_KS_BYTES;
 
-	dmrAesEncryptBlock(k, iv, b);	// the first OFB block is not used
-	while (n < DMR_AES_KS_BYTES) {
-		dmrAesEncryptBlock(k, b, b);
-		for (unsigned i = 0; i < 16 && n < DMR_AES_KS_BYTES; i++)
-			ks[n++] = b[i];
+	memcpy(block, iv, 16);
+	for (unsigned base = 0; base < to; base += 16) {
+		aes256Encrypt(ctx, block, block);	// OFB: each block is the encryption of the one before
+		for (unsigned i = 0; i < 16; i++)
+			if (base + i >= from && base + i < to)
+				ks[base + i - from] = block[i];
 	}
 }
 
-void dmrAesApplyFrame(const uint8_t ks[DMR_AES_KS_BYTES], uint8_t frame, uint8_t bits[49])
+void dmrAesApplyBurst(const uint8_t ks[DMR_AES_BURST_KS_BYTES], uint8_t ambe27[27], bool correctErrors)
 {
-	if (frame >= DMR_AES_FRAMES)
+	for (int f = 0; f < DMR_PRIVACY_AMBE_BURST_FRAMES; f++) {
+		uint8_t *frame = &ambe27[f * DMR_PRIVACY_AMBE_FRAME_BYTES];
+		const uint8_t *k = &ks[f * DMR_AES_FRAME_KS_BYTES];
+		uint8_t bits[DMR_PRIVACY_AMBE_FRAME_BITS];
+
+		if (correctErrors)
+			ambeFecDecode(frame, bits, NULL);
+		else
+			dmrPrivacyAmbeExtract(frame, bits);
+		for (int i = 0; i < DMR_PRIVACY_AMBE_FRAME_BITS; i++)
+			bits[i] ^= (uint8_t)((k[i >> 3] >> (7 - (i & 7))) & 1u);
+		dmrPrivacyAmbeEncode(bits, frame);
+	}
+}
+
+// --- Keys and the call stack's hook ---
+
+void dmrAesStateInit(dmrAesState_t *st)
+{
+	memset(st, 0, sizeof(*st));
+	st->aes_slot = -1;
+}
+
+bool dmrAesSetKey(dmrAesState_t *st, uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[DMR_AES_KEY_BYTES])
+{
+	if (slot >= DMR_AES_KEY_SLOTS || (alg != 0 && alg != DMR_AES_ALG_AES256) || (alg != 0 && key == NULL))
+		return false;
+
+	dmrAesKey_t *k = &st->keys[slot];
+
+	memset(k, 0, sizeof(*k));
+	if (alg != 0) {
+		k->valid = true;
+		k->alg = alg;
+		k->key_id = key_id;
+		memcpy(k->key, key, DMR_AES_KEY_BYTES);
+	}
+	if (st->aes_slot == (int8_t)slot) {
+		st->aes_slot = -1;
+		memset(&st->aes, 0, sizeof(st->aes));
+	}
+	return true;
+}
+
+bool dmrAesHasKeys(const dmrAesState_t *st)
+{
+	for (int i = 0; i < DMR_AES_KEY_SLOTS; i++)
+		if (st->keys[i].valid)
+			return true;
+	return false;
+}
+
+int8_t dmrAesFindKey(const dmrAesState_t *st, uint8_t alg, uint8_t key_id)
+{
+	for (int i = 0; i < DMR_AES_KEY_SLOTS; i++)
+		if (st->keys[i].valid && st->keys[i].alg == alg && st->keys[i].key_id == key_id)
+			return (int8_t)i;
+	return -1;
+}
+
+bool dmrAesCallHook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx, void *ctx)
+{
+	dmrAesState_t *st = (dmrAesState_t *)ctx;
+
+	if (st == NULL || pos == NULL)
+		return false;
+
+	int8_t slot = dmrAesFindKey(st, pos->alg, pos->key_id);
+
+	if (slot < 0)
+		return false;
+	if (st->aes_slot != slot) {
+		aes256Init(&st->aes, st->keys[slot].key);
+		st->aes_slot = slot;
+	}
+	if (!st->iv_valid || st->iv_mi != pos->mi || st->iv_sf != pos->superframe) {
+		// The next superframe's IV is this one's shifted by a word: only the LFSR steps since are run
+		if (st->iv_valid && st->iv_mi == pos->mi && pos->superframe == st->iv_sf + 1) {
+			uint32_t w = ((uint32_t)st->iv[12] << 24) | ((uint32_t)st->iv[13] << 16) | ((uint32_t)st->iv[14] << 8) |
+				     st->iv[15];
+
+			w = dmrAesMiNext(w);
+			memmove(st->iv, &st->iv[4], 12);
+			st->iv[12] = (uint8_t)(w >> 24);
+			st->iv[13] = (uint8_t)(w >> 16);
+			st->iv[14] = (uint8_t)(w >> 8);
+			st->iv[15] = (uint8_t)w;
+		} else {
+			dmrAesIv(pos->mi, pos->superframe, st->iv);
+		}
+		st->iv_mi = pos->mi;
+		st->iv_sf = pos->superframe;
+		st->iv_valid = true;
+	}
+
+	uint8_t ks[DMR_AES_BURST_KS_BYTES];
+
+	dmrAesBurstKeystream(&st->aes, st->iv, pos->voice_index, ks);
+	dmrAesApplyBurst(ks, ambe27, !tx);
+	return true;
+}
+
+// --- Staging: another task writes the key, then sets the flag; the radio task copies it out and clears the flag ---
+
+static dmrAesKey_t staged;
+static uint8_t staged_slot;
+static volatile bool staged_ready;
+
+void dmrAesStage(uint8_t slot, uint8_t alg, uint8_t key_id, const uint8_t key[DMR_AES_KEY_BYTES])
+{
+	if (slot >= DMR_AES_KEY_SLOTS)
 		return;
-	const uint8_t *k = &ks[DMR_AES_FRAME_KS_BYTES * frame];
+	staged_ready = false;
+	__sync_synchronize();
+	memset(&staged, 0, sizeof(staged));
+	staged_slot = slot;
+	staged.valid = alg != 0;
+	staged.alg = alg;
+	staged.key_id = key_id;
+	if (alg != 0 && key != NULL)
+		memcpy(staged.key, key, DMR_AES_KEY_BYTES);
+	__sync_synchronize();
+	staged_ready = true;
+}
 
-	for (unsigned i = 0; i < 49; i++)
-		bits[i] ^= (uint8_t)((k[i >> 3] >> (7u - (i & 7u))) & 1u);
+bool dmrAesTakeStaged(uint8_t slot, dmrAesKey_t *out)
+{
+	if (!staged_ready || staged_slot != slot)
+		return false;
+	__sync_synchronize();
+	*out = staged;
+	memset(&staged, 0, sizeof(staged));	// the key lives in one place only
+	__sync_synchronize();
+	staged_ready = false;
+	return true;
 }

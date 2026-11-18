@@ -95,6 +95,17 @@ typedef struct {
 // voice_index 0-5 = A-F (docs/spec/gotchas.md 6.1, 6.2)
 typedef void (*dmr_privacy_fn)(uint8_t ambe27[DMR_VOICE_BYTES], uint8_t voice_index, bool tx, void *ctx);
 
+// Where a burst of a call with a PI header sits in the MI-based schemes' keystream (docs/spec/dmr-voice.md 5.1)
+struct dmr_crypt_pos {
+	uint8_t alg;		// the PI header's algorithm ID
+	uint8_t key_id;
+	uint32_t mi;		// its 32-bit message indicator
+	uint32_t superframe;	// 0 = the superframe right after the PI header
+	uint8_t voice_index;	// 0-5 = A-F
+};
+// MI-based encryption hook: as dmr_privacy_fn, for calls with a PI header. False: no key for it (not played)
+typedef bool (*dmr_crypt_fn)(uint8_t ambe27[DMR_VOICE_BYTES], const struct dmr_crypt_pos *pos, bool tx, void *ctx);
+
 typedef struct {
 	uint32_t own_id;
 	uint8_t cc;			// 0-15
@@ -113,6 +124,8 @@ typedef struct {
 	uint8_t tx_svc;			// voice LC service options (privacy bit, emergency, priority)
 	dmr_privacy_fn privacy;		// NULL = none: bursts with PI set are not played
 	void *privacy_ctx;
+	dmr_crypt_fn crypt;		// NULL = none: calls with a PI header are not played
+	void *crypt_ctx;
 	char tx_alias[DMR_TA_TEXT_MAX + 1];	// our talker alias, "" = none (CONFIG_DMR_TALKER_ALIAS)
 	uint8_t tx_alias_format;	// DMR_TA_7BIT or DMR_TA_ISO8
 	// A user of a single frequency repeater (CONFIG_SFR, docs/spec/sfr.md 4; never with rmo): ts is the inbound slot.
@@ -146,9 +159,9 @@ typedef struct {
 	bool late_entry;	// acquired from the embedded LC, no header heard
 	bool emergency;		// the emergency service option
 	bool pi_header;		// a PI header (data type 0) was heard for this call
-	uint8_t pi_alg;		// its octet 0: the algorithm ID (0x25 AES-256 in the DMRA layout)
-	uint8_t pi_key;		// its octet 2: the key ID (octet 1 is not interpreted)
-	uint32_t pi_mi;		// its octets 3-6: the message indicator, most significant octet first
+	uint8_t pi_alg;		// in the DMRA layout (alg, 0x10, key ID, MI, 3 octets): the algorithm ID
+	uint8_t pi_key;		// ... the key ID
+	uint32_t pi_mi;		// ... and the message indicator
 	char alias[DMR_TA_TEXT_MAX + 1];	// talker alias so far, "" if none
 	bool alias_complete;
 	bool gps_valid;		// a GPS Info LC was heard from this talker (CONFIG_DMR_GPS)

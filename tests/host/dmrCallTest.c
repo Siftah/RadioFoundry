@@ -2611,6 +2611,87 @@ static void rx_pi_header_burst(const uint8_t info[10], uint8_t cc, bool good_crc
 	sim_rx(&b);
 }
 
+// The MI-based encryption hook (dmr_crypt_fn): a call with a PI header goes through it with the PI header's algorithm,
+// key ID and MI and the burst's superframe, counted from the PI header across superframes heard and lost
+static struct dmr_crypt_pos crypt_log[64];
+static unsigned crypt_n;
+static uint8_t crypt_key_id = 5;
+
+static bool crypt_hook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx, void *ctx)
+{
+	(void)ambe27;
+	(void)ctx;
+	if (tx || pos->key_id != crypt_key_id)
+		return false;
+	if (crypt_n < 64)
+		crypt_log[crypt_n++] = *pos;
+	return true;
+}
+
+static void test_crypt_hook(void)
+{
+	dmr_call_config_t c = base_cfg();
+	uint8_t lc[9];
+	static const uint8_t info[10] = { 0x25, 0x10, 0x05, 0xCD, 0x65, 0x54, 0xE0, 0x00, 0x00, 0x01 };
+	unsigned frame = 1;
+
+	c.crypt = crypt_hook;
+	setup(&c);
+	crypt_n = 0;
+	mk_lc(lc, 0, TG_TALK, 9997030);
+	lc[2] = DMR_SVC_PRIVACY;
+	for (int h = 0; h < 3; h++) {
+		rx_header(lc, 1, 0, DMR_SYNC_MS, false);
+		run_ms(60);
+	}
+	rx_pi_header_burst(info, 1, true);
+	run_ms(60);
+	CHECK(V()->caller.pi_alg == 0x25 && V()->caller.pi_key == 5 && V()->caller.pi_mi == 0xCD6554E0);
+	rx_call(lc, 1, false, 0, 1, false, &frame);	// superframe 0
+	rx_voice(0, 1, 0, DMR_SYNC_MS, &frame, NULL, false);	// superframe 1: A, then B-F lost
+	run_ms(6 * 60);
+	rx_call(lc, 1, false, 0, 1, false, &frame);	// superframe 2: A again is a superframe on, not a repeat
+	CHECK(crypt_n == 13);
+	for (unsigned n = 0; n < crypt_n && n < 13; n++) {
+		const struct dmr_crypt_pos *p = &crypt_log[n];
+
+		CHECK(p->alg == 0x25 && p->key_id == 5 && p->mi == 0xCD6554E0 && p->voice_index == (n < 7 ? n : n - 7) % 6);
+		CHECK(p->superframe == (n < 6 ? 0u : n == 6 ? 1u : 2u));
+	}
+
+	// The call fades (superframe 3 lost) and resumes by late entry: the PI header holds, the time places the bursts
+	run_ms(6 * 60);
+	rx_call(lc, 1, false, 0, 2, false, &frame);	// superframes 4 and 5
+	CHECK(V()->caller.pi_header && V()->caller.pi_mi == 0xCD6554E0 && crypt_n > 13);
+	if (crypt_n > 13)
+		CHECK(crypt_log[crypt_n - 1].superframe == 5 && crypt_log[crypt_n - 1].voice_index == 5);
+	rx_header(lc, 1, 0, DMR_SYNC_MS, true);
+	run_ms(500);
+
+	// Voice LC header missed: the late entry takes the PI header heard before it
+	crypt_n = 0;
+	rx_pi_header_burst(info, 1, true);
+	run_ms(60);
+	rx_call(lc, 1, false, 0, 2, false, &frame);
+	CHECK(V()->caller.late_entry && V()->caller.pi_header && crypt_n > 0);
+	if (crypt_n > 0)
+		CHECK(crypt_log[crypt_n - 1].superframe == 1 && crypt_log[crypt_n - 1].voice_index == 5);
+	rx_header(lc, 1, 0, DMR_SYNC_MS, true);
+	run_ms(500);
+
+	// No key for the call's key ID: not played
+	crypt_key_id = 6;
+	setup(&c);
+	rx_call(lc, 1, true, 0, 0, false, &frame);
+	rx_pi_header_burst(info, 1, true);
+	run_ms(60);
+	rx_call(lc, 1, false, 0, 1, false, &frame);
+	CHECK(sink_log.frames == 0);
+	rx_header(lc, 1, 0, DMR_SYNC_MS, true);
+	run_ms(500);
+	crypt_key_id = 5;
+}
+
 static void test_pi_header_and_emergency(void)
 {
 	dmr_call_config_t c = base_cfg();
@@ -3331,6 +3412,7 @@ int main(void)
 	test_tx_alias();
 	test_alias_formats();
 	test_pi_header_and_emergency();
+	test_crypt_hook();
 	test_private_calls();
 	test_basic_privacy();
 	test_gps_lc();
