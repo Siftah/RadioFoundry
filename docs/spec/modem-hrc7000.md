@@ -344,6 +344,12 @@ Nothing here confirms that b19 at a late-entry interrupt with no deframe names t
 than the last burst deframed; that needs on-air confirmation with calls on both slots. It does not infer a DMR
 timeslot from the chip slot: BS bursts retain their CACH TC labels.
 
+**Slot numbers of received bursts.** BS sync: from the CACH TC. TDMA direct mode sync (TS1 / TS2): from the sync.
+MS sync (simplex) and bursts with no sync of their own: a label, as on the HR_C6000. 1 is the chip slot first heard
+since the receive timing was last acquired (a restart, or the hold after our transmission), 2 the other. b19 is never
+the label itself: after a restart a talker can land on chip slot 1, and a stock radio's simplex call
+on TS1 was then reported as TS2 on every burst (bench capture, 2026-11-18).
+
 **Voice RAM (0x16000960)**: write 27 bytes before arming a voice burst; read 27 bytes after a voice deframe interrupt
 Burst numbering for privacy keystream purposes is RX_TYPE_INFO's 1–6.
 

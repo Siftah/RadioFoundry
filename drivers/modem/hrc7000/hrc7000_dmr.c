@@ -709,7 +709,14 @@ static int8_t slot_ts(hrc7000_dmr_t *e, const hrc7000_rx_status_t *s)
 		e->tc_slot[s->chip_slot ^ 1u] = s->sync == DMR_SYNC_TS1 ? 2 : 1;
 		return e->tc_slot[s->chip_slot];
 	default:
-		return e->tc_slot[s->chip_slot] != 0 ? e->tc_slot[s->chip_slot] : (int8_t)(s->chip_slot + 1);
+		// MS sync or none (simplex, voice B-F): a label, as on the HR_C6000. 1 is the chip slot first heard since the
+		// timing was (re)acquired, 2 the other. The chip slot number itself is no label: after a receiver restart a
+		// talker can land on chip slot 1, and a simplex call on TS1 was then reported as TS2 throughout
+		if (e->tc_slot[s->chip_slot] == 0) {
+			e->tc_slot[s->chip_slot] = 1;
+			e->tc_slot[s->chip_slot ^ 1u] = 2;
+		}
+		return e->tc_slot[s->chip_slot];
 	}
 }
 
