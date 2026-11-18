@@ -17,8 +17,8 @@
 //
 // Receive: the chip receives every slot (0x40), and bursts are reported by the system interrupt (bit 3, deframe) with
 // their status in RX_TYPE_INFO, which carries the slot (current_rx_slot), the CACH TC bit and the sync family. Slot
-// numbers: through a repeater from TC; TDMA direct mode from the sync family; simplex as a label from the chip's slot
-// number (1 or 2, stable while the timing holds).
+// numbers: through a repeater from TC; TDMA direct mode from the sync family; simplex as a label, as on the HR_C6000:
+// 1 is the chip slot first heard since the timing was (re)acquired, 2 the other (stable while the timing holds).
 //
 // A BS signal's CACH (a repeater, a control channel): once the TC lock holds, each slot tick carries the TS
 // starting there and the AT bit of the last CACH that named it (RX_TYPE_INFO b23, DMR_TICK_AT_*); the short LC the
@@ -160,7 +160,7 @@ typedef struct {
 	// voice-access flag. Two at once for an SFR user, who hears the talker's copy and the repeat (modem-hrc7000.md 5.3)
 	uint8_t voice_slots;
 	uint32_t voice_slot_tick[2];
-	int8_t tc_slot[2];	// TS (1/2) of each chip slot, learned from BS-sync bursts (TC), 0 unknown
+	int8_t tc_slot[2];	// TS (1/2) of each chip slot: TC, TS1/TS2 sync, else the simplex label; 0 unknown
 	bool rx_bs;		// the last burst taken was BS-sourced (a repeater)
 	uint8_t tc_agree;	// BS bursts in a row, one per slot, with TC alternating (the lock: TC_LOCK)
 	uint8_t tc_prev;	// TC of the last BS burst, and its tick

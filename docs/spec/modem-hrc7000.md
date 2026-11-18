@@ -313,6 +313,10 @@ embedded LC fragments correctly is unverified; follow the datasheet.
 "CRC good" for a deframed burst = bits 30:24 all zero. Data blocks and MBC continuation blocks have no CRC-16, so do
 not drop them on these flags; check CRC-9/CRC-32 (the MBC's CRC-16 in its last block) in software. RX_INFO (0x394): b24:16 trunking multiframe number, b10:0 received RC.
 
+b17 (pi) clear on an encrypted call does not mean a misread. A stock radio's AES-256 simplex calls, recorded on the SDR
+bench and their EMBs decoded in software (2026-11-18, 270 voice bursts B-F, color code and LCSS all as expected), had PI
+0 on every burst: that sender marks privacy only in the service options and the PI header.
+
 ### 2.8 Buffer layouts
 
 **TX RAM (0x16000000)**, datasheet table 52: 0x00–0x0B the current control burst (PI header 10 + 2 CRC, LC header / terminator
@@ -343,6 +347,12 @@ discard both. A failed late-entry checksum invalidates only the reporting slot's
 Nothing here confirms that b19 at a late-entry interrupt with no deframe names the burst that completed the LC rather
 than the last burst deframed; that needs on-air confirmation with calls on both slots. It does not infer a DMR
 timeslot from the chip slot: BS bursts retain their CACH TC labels.
+
+**Slot numbers of received bursts.** BS sync: from the CACH TC. TDMA direct mode sync (TS1 / TS2): from the sync.
+MS sync (simplex) and bursts with no sync of their own: a label, as on the HR_C6000. 1 is the chip slot first heard
+since the receive timing was last acquired (a restart, or the hold after our transmission), 2 the other. b19 is never
+the label itself: after a restart a talker can land on chip slot 1, and a stock radio's simplex call
+on TS1 was then reported as TS2 on every burst (bench capture, 2026-11-18).
 
 **Voice RAM (0x16000960)**: write 27 bytes before arming a voice burst; read 27 bytes after a voice deframe interrupt
 Burst numbering for privacy keystream purposes is RX_TYPE_INFO's 1–6.
