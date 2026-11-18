@@ -128,6 +128,11 @@ static void test_pure(void)
 	hrc7000_rx_status_t s;
 	hrc7000_dmr_decode(rti(2, 0, 5, 0, 1, 0), &s);
 	CHECK(s.kind == DMR_BURST_VOICE && s.voice_index == 1 && s.cc == 5 && s.sync == DMR_SYNC_MS && s.chip_slot == 1 && s.crc_ok);
+	CHECK(!s.pi && s.lcss == 0);
+	hrc7000_dmr_decode(rti(2, 0, 5, 0, 1, 0) | (1u << 17) | (1u << 15), &s);	// EMB PI 1, LCSS 1 (2.7)
+	CHECK(s.kind == DMR_BURST_VOICE && s.pi && s.lcss == 1 && s.cc == 5 && s.crc_ok);
+	hrc7000_dmr_decode(rti(2, 0, 5, 0, 1, 0) | (3u << 15), &s);	// LCSS 3 doesn't spill into PI
+	CHECK(!s.pi && s.lcss == 3);
 	hrc7000_dmr_decode(rti(2, 0, 5, 0, 1, 0) | (1u << 28), &s);	// QR error in the EMB
 	CHECK(s.kind == DMR_BURST_VOICE && !s.crc_ok);
 	hrc7000_dmr_decode(rti(1, 0, 5, 0, 0, 0) | (1u << 28), &s);	// burst A has no EMB to check
@@ -172,7 +177,7 @@ static void test_rx(void)
 	hrc7000_dmr_set_cc_filter(&eng, cfg.cc);
 	CHECK(REG(C7_LOCAL_CC) == 3 && (REG(C7_RF_MODE) & SYNC_AUTO));
 
-	// A voice LC header from the RX RAM, MS sync, chip slot 1: TS label 2
+	// A voice LC header from the RX RAM, MS sync, chip slot 1: the first slot heard, label 1
 	for (int i = 0; i < 12; i++) {
 		buf[C7_RX_RAM + i] = (uint8_t)(0x10 + i);
 	}
@@ -181,7 +186,7 @@ static void test_rx(void)
 	dmr_burst_t b;
 	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1);
 	CHECK(b.kind == DMR_BURST_VOICE_LC_HEADER && b.lc_valid && b.lc[0] == 0x10 && b.lc[8] == 0x18 && b.len == 12);
-	CHECK(b.cc == 3 && b.ts == 2 && b.crc_ok && b.in_step);
+	CHECK(b.cc == 3 && b.ts == 1 && b.crc_ok && b.in_step);
 	CHECK(eng.st.rx_lc_header == 1);
 
 	// Voice A on chip slot 1: the next decision for chip slot 1 gets the voice access flag
@@ -1890,12 +1895,80 @@ static void test_bs_mode_cleared(void)
 	CHECK(REG(C7_BS_CACH) == 0);
 }
 
+// Simplex (MS sync): the slot numbers are labels, as on the HR_C6000: 1 is the chip slot first heard since the timing
+// was acquired, 2 the other, whatever the chip numbers them. A stock radio's simplex call on TS1 heard on chip slot 1
+// was reported as TS2 on every burst (bench capture, 2026-11-18)
+static void test_rx_simplex_slot_label(void)
+{
+	setup();
+	const dmr_config_t cfg = { .own_id = 1234, .cc = 1, .access = DMR_ACCESS_POLITE_CC, .repeater = false };
+	hrc7000_dmr_configure(&eng, &cfg);
+	hrc7000_dmr_set_cc_filter(&eng, cfg.cc);
+	hrc7000_dmr_run(&eng);
+	dmr_burst_t b;
+
+	tick(false);
+	deframe(rti(0, DMR_BURST_VOICE_LC_HEADER, 1, 0, 1, 0));	// MS sync, chip slot 1
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 1 && b.sync == DMR_SYNC_MS);
+	for (uint8_t vb = 1; vb <= 6; vb++) {				// a superframe, A with MS sync, B-F none
+		tick(false);
+		deframe(rti(vb, 0, 1, 0, 1, 0));
+		CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.kind == DMR_BURST_VOICE && b.ts == 1);
+	}
+	deframe(rti(0, DMR_BURST_IDLE, 1, 0, 0, 0));			// the other chip slot
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 2);
+	CHECK(eng.st.last_ts == 2);
+
+	// The labels go with the timing: after the receiver restarts (390 ms without a burst), the first heard is 1 again
+	uint32_t rs = eng.st.rx_restarts;
+	for (int i = 0; i < 14; i++) {
+		tick(false);
+	}
+	CHECK(eng.st.rx_restarts == rs + 1);
+	tick(false);
+	deframe(rti(1, 0, 1, 0, 0, 0));					// voice A, chip slot 0 this time
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 1);
+	deframe(rti(2, 0, 1, 0, 1, 0));
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 2);
+
+	// A TS1 / TS2 or BS sync heard later names the slots for real and replaces the labels
+	deframe(rti(1, 0, 1, 3, 0, 0));					// TS2 sync on chip slot 0
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 2 && b.sync == DMR_SYNC_TS2);
+	deframe(rti(2, 0, 1, 0, 1, 0));
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.ts == 1);
+}
+
+// The EMB PI bit (RX_TYPE_INFO b17) reaches the stack on voice bursts B-F, set or clear as received
+static void test_rx_voice_pi(void)
+{
+	setup();
+	const dmr_config_t cfg = { .own_id = 1234, .cc = 1, .access = DMR_ACCESS_POLITE_CC, .repeater = false };
+	hrc7000_dmr_configure(&eng, &cfg);
+	hrc7000_dmr_set_cc_filter(&eng, cfg.cc);
+	hrc7000_dmr_run(&eng);
+	dmr_burst_t b;
+
+	tick(false);
+	deframe(rti(1, 0, 1, 0, 0, 0));
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && !b.pi);
+	for (uint8_t vb = 2; vb <= 6; vb++) {
+		tick(false);
+		deframe(rti(vb, 0, 1, 0, 0, 0) | (1u << 17));
+		CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && b.kind == DMR_BURST_VOICE && b.voice_index == vb - 1u && b.pi);
+	}
+	tick(false);
+	deframe(rti(2, 0, 1, 0, 0, 0));
+	CHECK(count_kind(DMR_EV_BURST_RX, &b) == 1 && !b.pi);
+}
+
 int main(void)
 {
 	test_pure();
 	test_rx();
 	test_rx_sfr_both_copies();
 	test_rx_slot_arg();
+	test_rx_simplex_slot_label();
+	test_rx_voice_pi();
 	test_rx_voice_ram_call();
 	test_rx_late_entry_slots();
 	test_bs_mode_cleared();
