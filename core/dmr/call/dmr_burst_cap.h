@@ -29,7 +29,7 @@
 typedef struct {
 	uint8_t kind;			// dmr_burst_kind_t
 	uint8_t voice_index;		// 0..5 (A..F) for voice
-	int8_t ts;			// 1, 2, 0 unknown
+	int8_t ts;			// 1, 2, 0 unknown; with MS sync (direct mode) the receiver's slot, not one on air
 	uint8_t flags;			// DMR_BURST_CAP_*
 	uint8_t len;			// payload bytes
 	uint16_t dt_ms;			// since the first burst captured (saturates)

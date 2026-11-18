@@ -745,6 +745,14 @@ run: run-burstcap
 run-burstcap: dmrBurstCapTest
 	./dmrBurstCapTest
 
+# DMR AES-256 voice decryption (core/dmr/dmrAes.c): FIPS-197, the MI words and a captured stock radio call
+TESTS   += dmrAesTest
+dmrAesTest: dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrAes.h $(CORE)/dmr/ambe/ambeFec.c
+	$(CC) $(CFLAGS) -Wshadow -o $@ dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/ambe/ambeFec.c
+run: run-aes
+run-aes: dmrAesTest
+	./dmrAesTest
+
 # The mic gain setting (core/radio/mic_gain.c): to the board's hook or to DMR's sample scaling, never both
 TESTS   += micGainTest
 micGainTest: micGainTest.c $(CORE)/radio/mic_gain.c $(CORE)/radio/mic_gain.h $(ROOT)/hal/hal_radio.h

@@ -146,8 +146,9 @@ typedef struct {
 	bool late_entry;	// acquired from the embedded LC, no header heard
 	bool emergency;		// the emergency service option
 	bool pi_header;		// a PI header (data type 0) was heard for this call
-	uint8_t pi_alg;		// its first two octets (algorithm and key ID in the DMRA layout; not interpreted)
-	uint8_t pi_key;
+	uint8_t pi_alg;		// its octet 0: the algorithm ID (0x25 AES-256 in the DMRA layout)
+	uint8_t pi_key;		// its octet 2: the key ID (octet 1 is not interpreted)
+	uint32_t pi_mi;		// its octets 3-6: the message indicator, most significant octet first
 	char alias[DMR_TA_TEXT_MAX + 1];	// talker alias so far, "" if none
 	bool alias_complete;
 	bool gps_valid;		// a GPS Info LC was heard from this talker (CONFIG_DMR_GPS)

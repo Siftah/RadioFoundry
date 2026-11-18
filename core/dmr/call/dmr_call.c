@@ -124,6 +124,7 @@ static struct {
 	bool pi_pending;
 	uint32_t pi_pending_ms;
 	uint8_t pi_pending_alg, pi_pending_key;
+	uint32_t pi_pending_mi;
 
 	// repeater outbound
 	uint32_t rpt_last_ms;
@@ -647,10 +648,12 @@ static void rx_lc(const uint8_t lc[DMR_LC_BYTES], const dmr_burst_t *b, bool lat
 	if (!continuing) {
 		c->pi_header = false;
 		c->pi_alg = c->pi_key = 0;
+		c->pi_mi = 0;
 		if (s.pi_pending && !elapsed(now, s.pi_pending_ms, true, fade_ms())) {
 			c->pi_header = true;	// heard just before the call was acquired
 			c->pi_alg = s.pi_pending_alg;
 			c->pi_key = s.pi_pending_key;
+			c->pi_mi = s.pi_pending_mi;
 			c->encrypted = true;
 		}
 #if CONFIG_SFR
@@ -977,14 +980,19 @@ static void rx_pi_header(const dmr_burst_t *b, uint32_t now)
 
 		ok = b->payload[10] == (uint8_t)(crc >> 8) && b->payload[11] == (uint8_t)crc;
 	}
-	if (!ok || b->len < 2)
+	if (!ok || b->len < 7)
 		return;
 	stats.rx_pi_headers++;
+	// DMRA layout, as the stock radios send it (dmr-voice.md 5): algorithm, an octet not interpreted, key ID, MI
+	uint32_t mi = ((uint32_t)b->payload[3] << 24) | ((uint32_t)b->payload[4] << 16) | ((uint32_t)b->payload[5] << 8) |
+		      b->payload[6];
+
 	if (s.rx == RXC_NONE) {
 		s.pi_pending = true;
 		s.pi_pending_ms = now;
 		s.pi_pending_alg = b->payload[0];
-		s.pi_pending_key = b->payload[1];
+		s.pi_pending_key = b->payload[2];
+		s.pi_pending_mi = mi;
 		return;
 	}
 
@@ -994,7 +1002,8 @@ static void rx_pi_header(const dmr_burst_t *b, uint32_t now)
 		stats.rx_encrypted_calls++;
 	c->pi_header = true;
 	c->pi_alg = b->payload[0];
-	c->pi_key = b->payload[1];
+	c->pi_key = b->payload[2];
+	c->pi_mi = mi;
 	c->encrypted = true;
 	s.dirty = true;
 }

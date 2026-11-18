@@ -218,9 +218,28 @@ and loads the active slot at boot (`settings-store.md` 3.1); the open-firmware c
 set it.
 
 PI header (data type 0, CRC-CCITT masked 0x6969): heard between the voice LC header and burst A, it marks the call
-encrypted and its first two octets are kept for display (algorithm and key ID in the common layout; not interpreted).
-A PI header heard just before a late entry is attached to that call. A PI header means an MI-based scheme the static
-keystream can't undo, so such a call is never played, key or not. We never send PI headers.
+encrypted. Its algorithm ID (octet 0), key ID (octet 2) and MI (octets 3-6) are kept for display (`pi_alg`, `pi_key`,
+`pi_mi`); octet 1 is not interpreted (0x10 from the radios measured, their FID). A PI header heard just before a late
+entry is attached to that call. A PI header means an MI-based scheme the static keystream can't undo, so such a call
+is never played, key or not. We never send PI headers.
+
+### 5.1 AES-256 with a message indicator
+
+The scheme behind PI headers with algorithm ID 0x25, as stock radios send it. Measured on the SDR bench and checked
+against a reference decoder used as a black box; `core/dmr/dmrAes.c` implements the receive side and
+`tests/host/dmrAesTest.c` decrypts a captured call with it. Not yet wired into the receive path.
+
+| Part | Layout |
+|---|---|
+| PI header | octet 0 algorithm ID (0x25), 1 not interpreted, 2 key ID, 3-6 MI (most significant octet first), 7-9 not interpreted, then the CRC |
+| MI words | w0 = the PI header's MI; each next word is 32 steps of the LFSR x^32 + x^22 + x^2 + x + 1 (shift left, new bit 0 = bits 31, 21, 1 and 0 XORed) |
+| IV | superframe s (0 = the one after the PI header): w(s) w(s+1) w(s+2) w(s+3), 128 bits |
+| Keystream | AES-256 in OFB mode from the IV; the first 16 octets are not used |
+| Per frame | frame j of the superframe (burst A frames 0-2 ... burst F frames 15-17) takes the next 7 octets, 7j to 7j+6; their top 49 bits are XORed onto the 49 AMBE+2 parameter bits (after the FEC decode, parameter bit 0 = the most significant keystream bit) |
+
+The embedded LC and talker alias stay in the clear, and every superframe's embedded signaling repeats the algorithm
+and key ID for late entry. The radios measured encrypt whatever their vocoder held before the call in bursts A and
+B of the first superframe; that decrypts like any other frame.
 
 For bench work on such schemes, a `CONFIG_VOICE_CAPTURE` build keeps the next bursts of a call before the stack drops
 them (`core/dmr/call/dmr_burst_cap.c`): the PI header's 10 octets, the voice LC header, the voice bursts as on air and
@@ -262,7 +281,7 @@ codec bits.
 Debug link (`debuglink.md`): the `core` view's `mode` and `vfo`, the `dmr` view's `dmr.cc`, `dmr.ts`, `dmr.target_id`,
 `dmr.target_private`, `dmr.target_manual`, `dmr.privacy`, `dmr.alias_tx`, `dmr.gps_tx_channel` (the channel's own position setting); RADIO op 31 sets the mode, color code and timeslot (the VFO's
 own in the VFO), op 15 the talk target and op 32 copies the channel to the VFO (2.2); the `dmr_call` view's
-`emergency`, `pi_header`, `alias_complete`, `fid`, `svc`, `pi_alg`, `pi_key`; the counters `rx_private_calls`,
+`emergency`, `pi_header`, `alias_complete`, `fid`, `svc`, `pi_alg`, `pi_key`, `pi_mi`; the counters `rx_private_calls`,
 `rx_emergency_calls`, `rx_encrypted_calls`, `rx_pi_headers`, `rx_alias_complete`, `tx_alias_lcs`, `rx_gps`,
 `tx_gps_lcs`; GPS Info as `call.gps_valid gps_lat gps_lon gps_err gps_dist_m gps_bearing` (and `last.`). HIL tests:
 `tests/hil/test_dmr_call_features.py` (`test_gps_info`: the bench sends a call with a GPS block, a `bench_tx`

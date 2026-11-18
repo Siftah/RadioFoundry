@@ -2615,7 +2615,8 @@ static void test_pi_header_and_emergency(void)
 {
 	dmr_call_config_t c = base_cfg();
 	uint8_t lc[9];
-	static const uint8_t info[10] = { 0x21, 0x05, 0x12, 0x34, 0x56, 0x78, 0x00, 0x00, 0x5B, 0x00 };
+	// As a stock radio sent it (AES-256, FID 0x10, key ID 1, MI 0xCD6554E0): the key ID is octet 2, not octet 1
+	static const uint8_t info[10] = { 0x25, 0x10, 0x01, 0xCD, 0x65, 0x54, 0xE0, 0x00, 0x00, 0x01 };
 	unsigned frame = 1;
 	dmr_call_stats_t st;
 
@@ -2630,7 +2631,8 @@ static void test_pi_header_and_emergency(void)
 	CHECK(!V()->caller.pi_header);
 	rx_pi_header_burst(info, 1, true);
 	run_ms(60);
-	CHECK(V()->caller.pi_header && V()->caller.encrypted && V()->caller.pi_alg == 0x21 && V()->caller.pi_key == 0x05);
+	CHECK(V()->caller.pi_header && V()->caller.encrypted && V()->caller.pi_alg == 0x25 && V()->caller.pi_key == 0x01 &&
+	      V()->caller.pi_mi == 0xCD6554E0u);
 	rx_call(lc, 1, false, 0, 1, true, &frame);
 	CHECK(sink_log.frames == 0 && V()->last_heard.pi_header);
 	dmr_call_get_stats(&st);
@@ -2642,7 +2644,8 @@ static void test_pi_header_and_emergency(void)
 	rx_pi_header_burst(info, 1, true);
 	run_ms(60);
 	rx_call(lc, 1, false, 0, 1, false, &frame);
-	CHECK(V()->caller.late_entry && V()->caller.pi_header && V()->caller.encrypted);
+	CHECK(V()->caller.late_entry && V()->caller.pi_header && V()->caller.encrypted && V()->caller.pi_key == 0x01 &&
+	      V()->caller.pi_mi == 0xCD6554E0u);
 	rx_header(lc, 1, 0, DMR_SYNC_MS, true);
 	run_ms(500);
 
