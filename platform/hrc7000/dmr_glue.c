@@ -79,12 +79,36 @@ static uint32_t now_us(void *ctx)
 static uint32_t lock_saved;
 static uint32_t lock_depth;
 
+// The engine lock masks the modem interrupts. A task holding it must not be preempted: a higher-priority task (audio,
+// the stack's callback) running meanwhile held the slot interrupts off for milliseconds, and the HR_C7000 cut a TX
+// burst short or lost one (SDR bench, 2026-11-19: about one in 5 s of TX). So task-level holders also hold the
+// scheduler. The work under the lock is register writes and copies: nothing in it blocks
+// Lock-hold and slot-interrupt timing, for the diag page (lk / tsj lines)
+static uint32_t lk_t0, lk_max_us, lk_long;
+static const char *lk_max_task = "-";
+static uint32_t tsj_prev, tsj_n, tsj_max_us, tsj_last_ms;
+static const char *tsj_task = "-";
+static const char *volatile lk_owner;
+
+// The same answer at lock and unlock: the scheduler suspended (by this lock or another holder) still counts, since
+// vTaskSuspendAll() nests
+static bool lock_sched(void)
+{
+	return !hrc_in_isr() && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED;
+}
+
 static void lock(void *ctx)
 {
 	(void)ctx;
+	bool sched = lock_sched();
+	if (sched) {
+		vTaskSuspendAll();
+	}
 	uint32_t s = hrc_irq_save();
 	if (lock_depth++ == 0) {
 		lock_saved = hrc_modem_irqs_mask();
+		lk_t0 = hrc_micros();
+		lk_owner = sched ? pcTaskGetName(NULL) : "isr";
 	}
 	hrc_irq_restore(s);
 }
@@ -95,8 +119,39 @@ static void unlock(void *ctx)
 	uint32_t s = hrc_irq_save();
 	if (lock_depth > 0 && --lock_depth == 0) {
 		hrc_modem_irqs_restore(lock_saved);
+		uint32_t held = hrc_micros() - lk_t0;
+		if (held > 1000u) {
+			lk_long++;
+		}
+		if (held > lk_max_us) {
+			lk_max_us = held;
+			lk_max_task = lk_owner != NULL ? lk_owner : "?";	// a task's name lives as long as the task
+		}
 	}
 	hrc_irq_restore(s);
+	if (lock_sched()) {
+		(void)xTaskResumeAll();
+	}
+}
+
+// A slot interrupt during TX more than 1 ms off the 30 ms grid: counted, with the task that held the lock last
+static void tsj_note(void)
+{
+	uint32_t t = hrc_micros();
+	uint32_t d = t - tsj_prev;
+	tsj_prev = t;
+	if (!hrc7000_dmr_is_transmitting(&eng) || d > 200000u) {
+		return;	// not sending, or the first interrupt of a transmission
+	}
+	uint32_t off = d > 30000u ? d - 30000u : 30000u - d;
+	if (off > 1000u) {
+		tsj_n++;
+		tsj_last_ms = t / 1000u;
+		tsj_task = lk_owner != NULL ? lk_owner : "?";
+		if (off > tsj_max_us) {
+			tsj_max_us = off;
+		}
+	}
 }
 
 static void notify(void *ctx)
@@ -158,12 +213,12 @@ static const hrc7000_dmr_ops_t ops = {
 
 #if CONFIG_AIR
 static void isr_sys(void) { if (air_on) hrc7000_air_isr_sys(AIR); else hrc7000_dmr_isr_sys(&eng); }
-static void isr_ts_tx(void) { if (air_on) hrc7000_air_isr_timeslot(AIR); else hrc7000_dmr_isr_timeslot(&eng, true); }
+static void isr_ts_tx(void) { if (air_on) hrc7000_air_isr_timeslot(AIR); else { tsj_note(); hrc7000_dmr_isr_timeslot(&eng, true); } }
 static void isr_ts_rx(void) { if (air_on) hrc7000_air_isr_timeslot(AIR); else hrc7000_dmr_isr_timeslot(&eng, false); }
 static void isr_rftx(void) { if (air_on) hrc7000_air_isr_rftx(AIR); else hrc7000_dmr_isr_rftx(&eng); }
 #else
 static void isr_sys(void) { hrc7000_dmr_isr_sys(&eng); }
-static void isr_ts_tx(void) { hrc7000_dmr_isr_timeslot(&eng, true); }
+static void isr_ts_tx(void) { tsj_note(); hrc7000_dmr_isr_timeslot(&eng, true); }
 static void isr_ts_rx(void) { hrc7000_dmr_isr_timeslot(&eng, false); }
 static void isr_rftx(void) { hrc7000_dmr_isr_rftx(&eng); }
 #endif
@@ -839,6 +894,18 @@ HRC_FLASHFUNC bool hrc_dmr_stats_line(uint8_t i, char *buf, uint8_t len)
 		put_kv(&o, " mg", bs.st.max_gap_us);
 		break;
 #endif
+	case HRC_DMR_DIAG_LINES - 2:	// engine lock holds over 1 ms, the longest (us) and its task; slot interrupts
+					// during TX over 1 ms off the grid, the worst (us), the last one's uptime (ms) and lock holder
+		put_kv(&o, "lk", lk_long);
+		put_kv(&o, " m", lk_max_us);
+		put(&o, " ");
+		put(&o, lk_max_task);
+		put_kv(&o, " tsj", tsj_n);
+		put_kv(&o, " m", tsj_max_us);
+		put_kv(&o, " @", tsj_last_ms);
+		put(&o, " ");
+		put(&o, tsj_task);
+		break;
 	case HRC_DMR_DIAG_LINES - 1: {	// the prompt FIFO's TX gate (audio_pcm.c): closings, late (a beep still
 					// sounding, its tail cut), ring play on while closed (never); the speaker queue's underruns (never)
 		uint32_t g, l, ra, b, ov, un;
