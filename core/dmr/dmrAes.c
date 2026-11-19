@@ -164,6 +164,35 @@ void dmrAesApplyBurst(const uint8_t ks[DMR_AES_BURST_KS_BYTES], uint8_t ambe27[2
 	}
 }
 
+// Advertise the next superframe's MI (the second word of this IV). The three frame positions
+// carry one extended Golay word each, a nibble per burst from A (most significant) to F.
+static void txLateEntry(uint8_t *voice, const uint8_t *iv, uint8_t voice_index)
+{
+	uint32_t mi = ((uint32_t)iv[4] << 24) | ((uint32_t)iv[5] << 16) | ((uint32_t)iv[6] << 8) | iv[7];
+	uint8_t crc = 0;
+
+	for (int bit = 31; bit >= 0; bit--) {
+		unsigned feedback = ((mi >> bit) ^ (crc >> 3)) & 1u;
+		crc = (uint8_t)(((crc << 1) & 15) ^ (feedback ? 3 : 0));
+	}
+	uint16_t data[3] = { (uint16_t)(mi >> 20), (uint16_t)((mi >> 8) & 0xfff),
+			     (uint16_t)(((mi & 0xff) << 4) | (crc ^ 15)) };
+	for (int f = 0; f < 3; f++) {
+		// Stock late-entry words differ from the AMBE Golay encoder in parity bits 9 and 0.
+		unsigned parity = data[f] & 0xdc;
+		parity ^= parity >> 4;
+		parity ^= parity >> 2;
+		parity ^= parity >> 1;
+		uint32_t word = ambeGolay24Encode(data[f]) ^ ((parity & 1u) * 0x201u);
+		unsigned nibble = word >> (4 * (5 - voice_index));
+		uint8_t *frame = &voice[f * DMR_PRIVACY_AMBE_FRAME_BYTES];
+
+		// Nibble MSB first in on-air bits 71, 67, 63, 59 (zero based).
+		frame[8] = (uint8_t)((frame[8] & 0xee) | ((nibble >> 3) & 1) | ((nibble & 4) << 2));
+		frame[7] = (uint8_t)((frame[7] & 0xee) | ((nibble >> 1) & 1) | ((nibble & 1) << 4));
+	}
+}
+
 // --- Keys and the call stack's hook ---
 
 void dmrAesStateInit(dmrAesState_t *st)
@@ -280,7 +309,7 @@ bool dmrAesCallHook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx
 {
 	dmrAesState_t *st = (dmrAesState_t *)ctx;
 
-	if (st == NULL || pos == NULL)
+	if (st == NULL || pos == NULL || pos->voice_index >= 6)
 		return false;
 
 	int8_t slot = dmrAesFindKey(st, pos->alg, pos->key_id);
@@ -312,6 +341,8 @@ bool dmrAesCallHook(uint8_t ambe27[27], const struct dmr_crypt_pos *pos, bool tx
 
 	dmrAesBurstKeystream(&st->aes, st->iv, pos->voice_index, ks);
 	dmrAesApplyBurst(ks, ambe27, !tx);
+	if (tx)
+		txLateEntry(ambe27, st->iv, pos->voice_index);
 	return true;
 }
 

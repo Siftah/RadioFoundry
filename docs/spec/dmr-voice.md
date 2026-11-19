@@ -23,7 +23,7 @@ PTT always uses.
 | Group (FLCO 0) | its talkgroup is the talk target's, all call (0xFFFFFF), in the channel's RX group list (listen list), the reply target's during the reply window, or hear all, "digital monitor" in the UI (the hear-all latch: the MONITOR key's press toggles it on a DMR channel, its release does nothing (#19); Quick 5; `radio_req_dmr_hear_all`; until the channel changes, DMR stops (a mode change), or BACK on Home; the end of a call doesn't end it. A zone or VFO scan started with it on keeps it on at every stop and latches it on the channel the scan ends on; turning it off during the scan ends it for the scan, [radio-features.md](radio-features.md) 2) |
 | Private (FLCO 3) | addressed to our ID (the channel's DMR ID override, else the radio's), or all call, or hear all |
 | Our own ID as source | not while we transmit or for `DMR_CALL_OWN_ECHO_MS` (700 ms) after our call ended or was cut short (the repeater's echo of it); later it is judged as any other call, so a parrot's playback of our call plays (#294). A terminator from our ID ends only the call with its LC, never another station's |
-| Encrypted | only with a privacy key, and never after a PI header (section 5) |
+| Encrypted | with the applicable privacy key; AES requires the opening PI header and a matching key (section 5) |
 
 A call that doesn't pass is shown as busy ("not played") while it lasts, and counts for polite channel access.
 
@@ -258,8 +258,14 @@ encrypted from burst A of superframe 0 (`dmr_call_config_t.tx_crypt_alg`, `tx_cr
 goes to the modem with its CRC (masked 0x6969) as a host CRC burst; a modem that makes its own CRC must use the PI
 mask. Each over takes a new MI (`dmrAesNewMi`): the TX key encrypts the key-up time, a count and the previous MI, as
 there is no hardware RNG; a repeat needs the same count and the same millisecond after a restart. If the key goes away
-during an over, its voice goes out as silence, never in the clear. A host test encrypts the decrypted capture again and
-gets the stock radio's bursts bit for bit.
+during an over, its voice goes out as silence, never in the clear. TX embeds the next superframe's MI after encrypting the voice. Append the four-bit CRC
+(polynomial 0x13, initial zero, final XOR 0xF, MSB first) to the 32-bit MI and split the result into three 12-bit
+words, most significant first. Each frame position carries one word across A-F. Start with the AMBE extended
+Golay codeword and toggle parity bits 9 and 0 (LSB numbered 0) when the data word masked by 0x0DC has odd parity,
+as measured on stock transmissions. Send the resulting 24 bits in six nibbles, most significant first. Each nibble
+replaces on-air bits 71, 67, 63, 59 of its 72-bit encrypted voice frame in that order (air index 0 first).
+These four speech bits cannot be recovered by decrypting the frame. Host tests check the transmitted nibbles
+against stock calls with different input speech.
 
 For bench work on such schemes, a `CONFIG_VOICE_CAPTURE` build keeps the next bursts of a call before the stack drops
 them (`core/dmr/call/dmr_burst_cap.c`): the PI header's 10 octets, the voice LC header, the voice bursts as on air and

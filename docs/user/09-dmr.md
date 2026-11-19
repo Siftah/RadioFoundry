@@ -279,7 +279,7 @@ been checked against another radio yet ([Radio reference](23-radios.md)).
 
 - The radio plays an encrypted call only when it has the matching key. Without the key the call shows as
   "Encrypted: not played".
-- Calls with stronger encryption (they send a PI header) are never played.
+- On builds with AES-256 enabled, the radio can play a call when it receives the opening privacy header and has the matching AES key. AES transmissions repeat the message indicator during the call for receivers joining late.
 - **\***, **6** turns privacy on for your calls ("Privacy on for now"). Home shows "Priv". **Back** on Home turns it
   off again.
 

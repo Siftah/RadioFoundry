@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 /*
- * Host tests for DMR AES-256 voice encryption (core/dmr/dmrAes.c, docs/spec/dmr-voice.md 5.2)
+ * Host tests for DMR AES-256 voice encryption (core/dmr/dmrAes.c, docs/spec/dmr-voice.md 5.1)
  *
  *   make -C tests/host run-aes
  */
@@ -197,7 +197,50 @@ static void test_roundtrip(void)
 		dmrAesCallHook(v, &pos, true, &st);
 		CHECK(memcmp(v, clear, 27) != 0, "TX changes the burst");
 		dmrAesCallHook(v, &pos, false, &st);
-		CHECK(memcmp(v, clear, 27) == 0, "round trip %u", i);
+		// Embedded MI replaces four uncoded speech bits per frame.
+		for (int j = 0; j < 27; j++) {
+			unsigned mask = j % 9 >= 7 ? 0xee : 0xff;
+			CHECK(((v[j] ^ clear[j]) & mask) == 0, "round trip burst %u byte %d", i, j);
+		}
+	}
+}
+
+// Twelve signaling bits per burst from two SDR recordings and superframe 1 of BCAP1.
+static void test_tx_late_entry(void)
+{
+	static const struct {
+		uint32_t mi, sf;
+		uint16_t burst[6];
+	} captures[] = {
+		{ 0xDEA24DE5, 6, { 0xD2E, 0x1E9, 0x8CC, 0x302, 0x5BC, 0xB7A } },
+		{ 0x9941001C, 4, { 0xB29, 0xC69, 0x373, 0xBFA, 0x37A, 0xFE9 } },
+		{ 0xCD6554E0, 1, { 0x8C3, 0x92D, 0x983, 0xB36, 0xE42, 0x44C } },
+	};
+	dmrAesState_t st;
+	uint8_t key[32];
+
+	hex(KEY_A, key, 32);
+	dmrAesStateInit(&st);
+	dmrAesSetKey(&st, 0, DMR_AES_ALG_AES256, 1, key);
+	for (unsigned c = 0; c < sizeof(captures) / sizeof(captures[0]); c++) {
+		struct dmr_crypt_pos pos = { .alg = DMR_AES_ALG_AES256, .key_id = 1, .mi = captures[c].mi,
+					     .superframe = captures[c].sf };
+		for (uint8_t i = 0; i < 6; i++) {
+			pos.voice_index = i;
+			for (unsigned pattern = 0; pattern < 2; pattern++) {
+				uint8_t v[27];
+				uint16_t signaling = 0;
+				memset(v, pattern ? 0xff : 0, sizeof(v));
+				CHECK(dmrAesCallHook(v, &pos, true, &st), "TX hook");
+				for (int f = 0; f < 3; f++) {
+					const uint8_t *frame = &v[f * 9];
+					unsigned nibble = ((frame[8] & 1) << 3) | ((frame[8] & 16) >> 2) |
+							  ((frame[7] & 1) << 1) | ((frame[7] & 16) >> 4);
+					signaling = (uint16_t)((signaling << 4) | nibble);
+				}
+				CHECK(signaling == captures[c].burst[i], "late-entry call %u burst %u: %03X", c, i, signaling);
+			}
+		}
 	}
 }
 
@@ -217,7 +260,7 @@ static void test_stage(void)
 }
 
 // Our TX against the stock radio's: the captured call decrypted, then encrypted again by our TX path with the same key
-// and MI, gives the bursts the stock radio sent, bit for bit
+// and MI, reproduces the capture except for three signaling bits in its first burst.
 static void test_tx_matches_stock(void)
 {
 	dmrAesState_t st;
@@ -236,6 +279,12 @@ static void test_tx_matches_stock(void)
 		memcpy(v, air, 27);
 		dmrAesCallHook(v, &pos, false, &st);
 		dmrAesCallHook(v, &pos, true, &st);
+		if (n == 0) {
+			// The second and third frame nibbles in the capture are 7/5. The PI predicts 5/0.
+			air[9 + 7] ^= 1;
+			air[18 + 8] ^= 0x10;
+			air[18 + 7] ^= 0x10;
+		}
 		same += memcmp(v, air, 27) == 0;
 	}
 	CHECK(same == n_bursts, "%u of %u bursts as the stock radio sent them", same, n_bursts);
@@ -276,6 +325,7 @@ int main(void)
 	test_roundtrip();
 	test_stage();
 	test_tx_matches_stock();
+	test_tx_late_entry();
 	test_tx_key_and_mi();
 	if (failures)
 		printf("dmrAesTest: %d FAILED\n", failures);
