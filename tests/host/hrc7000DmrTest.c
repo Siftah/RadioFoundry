@@ -596,6 +596,16 @@ static void test_tx(void)
 	tick(true);
 	tick(true);
 	CHECK(REG(C7_LAYER2_SEND_TYPE) == 0x2B && buf[C7_VOICE_RAM] == 0xB9 && eng.st.tx_underrun == 1);
+	// The cadence checks: armings 2 ticks apart, A-B-C in order, one RF TX interrupt (for the header, the tick it was
+	// armed in); only the underrun fill logged
+	CHECK(eng.st.tx_arm_gap == 0 && eng.st.tx_voice_order == 0 && eng.st.tx_rftx_extra == 0 && eng.st.tx_slot_flip == 0);
+	CHECK(eng.st.tx_rf_at[0] == 1 && eng.st.tx_anom_n == 1 && ((eng.st.tx_anom[0] >> 12) & 0xFu) == HRC7000_TXA_UNDERRUN &&
+	      (eng.st.tx_anom[0] & 0xFFFu) == 2u);
+	// Two RF TX interrupts for one arming: the second is logged
+	hrc7000_dmr_isr_rftx(&eng);
+	hrc7000_dmr_isr_rftx(&eng);
+	CHECK(eng.st.tx_rftx_extra == 1 && eng.st.tx_anom_n == 2 &&
+	      ((eng.st.tx_anom[1] >> 12) & 0xFu) == HRC7000_TXA_RFTX_EXTRA);
 
 	// End: a terminator queued, then tx_end; it goes out, then the drain, then TX_DONE and the post-TX hold
 	dmr_tx_burst_t term = { .kind = DMR_BURST_TERMINATOR_LC, .len = 9 };

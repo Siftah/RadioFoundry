@@ -96,6 +96,14 @@ typedef struct {
 	uint32_t rx_in_tx[2];	// bursts deframed while we send, by ticks since our last arming (even, odd)
 	uint32_t stalls;
 	uint32_t sys_stuck;	// system requests pending with no handler run, dropped (hrc7000_dmr_poll)
+	// TX cadence checks (the mid-over glitch hunt, 2026-11-19): armings not 2 ticks after the last, voice bursts
+	// armed out of A-F order, RF TX interrupts beyond one per arming, RF TX interrupts by ticks after their arming
+	// (0, 1, 2 or more), LAYER2_STATUS b31 changed between armings
+	uint32_t tx_arm_gap, tx_voice_order, tx_rftx_extra, tx_rf_at[3], tx_slot_flip;
+	// The last 8 of those (and underrun fills), oldest overwritten: b31:16 ms since tx_begin, b15:12 kind
+	// (HRC7000_TXA_*), b11:0 value; tx_anom_n counts them all
+	uint32_t tx_anom[8];
+	uint32_t tx_anom_n;
 	uint32_t slc_reads;	// CACH short LCs reported (DMR_EV_SHORT_LC), CRC not checked
 	uint32_t rc_tap;	// RCs decoded from the receive tap after a listen slot (rc_tap_read): DMR_EV_RC
 	uint32_t rc_tap_changed;	// tap areas found changed there (a new burst), RC or not
@@ -121,6 +129,14 @@ typedef struct {
 	uint16_t txa_rx_us;	// first TX tick of an aligned start: 0.1 ms after the last receive tick
 	uint8_t txa_est;	// ... its TC estimate (repeater) or LAYER2_STATUS b31 (SFR) in b0, the next slot ours in b1
 } hrc7000_dmr_stats_t;
+
+// hrc7000_dmr_stats_t tx_anom kinds
+#define HRC7000_TXA_ARM_GAP	1u	// value: ticks since the last arming
+#define HRC7000_TXA_VOICE_ORDER	2u	// value: armed index << 4 | expected index
+#define HRC7000_TXA_RFTX_EXTRA	3u	// value: RF TX interrupts since the arming
+#define HRC7000_TXA_RF_AT	4u	// value: ticks after the arming, changed from the burst before
+#define HRC7000_TXA_SLOT_FLIP	5u	// value: LAYER2_STATUS b31 now
+#define HRC7000_TXA_UNDERRUN	6u	// value: the voice index filled with silence (0x80 | kind for a header)
 
 typedef struct {
 	dmr_event_t ev;
@@ -205,6 +221,11 @@ typedef struct {
 	// RF / PA
 	bool rf_tx;
 	uint32_t t_rf_tx;
+	// TX cadence checks (hrc7000_dmr_stats_t tx_arm_gap ...)
+	uint32_t t_txb;		// wall time of the last tx_begin
+	uint8_t rftx_since_arm;	// RF TX interrupts since the last arming
+	uint8_t rf_at_prev;	// the last RF TX interrupt's ticks after its arming, 0xFF none yet this over
+	uint8_t arm_b31;	// LAYER2_STATUS b31 at the last arming, 0xFF none yet this over
 
 #if defined(CONFIG_HOTSPOT_SPLIT) && CONFIG_HOTSPOT_SPLIT
 	struct hrc7000_bs *bs;	// split duplex BS outbound in charge of the chip (hrc7000_bs.c), NULL otherwise

@@ -168,6 +168,14 @@ static inline uint32_t now(hrc7000_dmr_t *e) { return e->ops->now_us(e->ops->ctx
 static void lock(hrc7000_dmr_t *e) { if (e->ops->lock != NULL) e->ops->lock(e->ops->ctx); }
 static void unlock(hrc7000_dmr_t *e) { if (e->ops->unlock != NULL) e->ops->unlock(e->ops->ctx); }
 
+// A TX cadence anomaly, for the diag page (hrc7000_dmr_stats_t tx_anom)
+static void tx_anom(hrc7000_dmr_t *e, uint32_t kind, uint32_t val)
+{
+	uint32_t ms = (now(e) - e->t_txb) / 1000u;
+	e->st.tx_anom[e->st.tx_anom_n % 8u] = ((ms > 0xFFFFu ? 0xFFFFu : ms) << 16) | ((kind & 0xFu) << 12) | (val & 0xFFFu);
+	e->st.tx_anom_n++;
+}
+
 static uint8_t txq_count(const hrc7000_dmr_t *e)
 {
 	return (uint8_t)((e->txq_head + HRC7000_DMR_TXQ_DEPTH - e->txq_tail) % HRC7000_DMR_TXQ_DEPTH);
@@ -402,6 +410,24 @@ static void set_send_sync(hrc7000_dmr_t *e, uint8_t family)
 static void arm(hrc7000_dmr_t *e, const dmr_tx_burst_t *b)
 {
 	uint8_t kind = b->kind;
+	if (e->tx_any) {
+		uint32_t gap = e->tick - e->tx_last_arm;
+		if (gap != 2u) {
+			e->st.tx_arm_gap++;
+			tx_anom(e, HRC7000_TXA_ARM_GAP, gap > 0xFFFu ? 0xFFFu : gap);
+		}
+		if (kind == DMR_BURST_VOICE && e->last_kind == DMR_BURST_VOICE && b->voice_index % 6u != e->next_voice) {
+			e->st.tx_voice_order++;
+			tx_anom(e, HRC7000_TXA_VOICE_ORDER, ((b->voice_index % 6u) << 4) | e->next_voice);
+		}
+	}
+	uint8_t b31 = (uint8_t)((r(e, C7_LAYER2_STATUS) >> 31) & 1u);
+	if (e->arm_b31 != 0xFFu && b31 != e->arm_b31) {
+		e->st.tx_slot_flip++;
+		tx_anom(e, HRC7000_TXA_SLOT_FLIP, b31);
+	}
+	e->arm_b31 = b31;
+	e->rftx_since_arm = 0;
 	set_send_sync(e, b->sync_override != DMR_SYNC_NONE ? b->sync_override : DMR_SYNC_MS);
 	if (kind == DMR_BURST_VOICE) {
 		uint8_t idx = (uint8_t)(b->voice_index % 6u);
@@ -659,10 +685,12 @@ static void tx_tick(hrc7000_dmr_t *e)
 		} else if (e->last_kind == DMR_BURST_VOICE) {
 			dmr_tx_burst_t s = { .kind = DMR_BURST_VOICE, .voice_index = e->next_voice, .len = 0 };
 			e->st.tx_underrun++;
+			tx_anom(e, HRC7000_TXA_UNDERRUN, e->next_voice);
 			arm(e, &s);
 		} else if (e->last_kind == DMR_BURST_VOICE_LC_HEADER || e->last_kind == DMR_BURST_PI_HEADER) {
 			dmr_tx_burst_t h = e->last_hdr;
 			e->st.tx_underrun++;
+			tx_anom(e, HRC7000_TXA_UNDERRUN, 0x80u | h.kind);
 			arm(e, &h);
 		} else if (e->tx_any) {
 			// Data or CSBK list ran out: end of the list
@@ -1006,6 +1034,17 @@ void hrc7000_dmr_isr_rftx(hrc7000_dmr_t *e)
 	if (!e->running || e->tx_state == TXS_IDLE || !e->tx_any) {
 		return;
 	}
+	if (++e->rftx_since_arm > 1u) {
+		e->st.tx_rftx_extra++;
+		tx_anom(e, HRC7000_TXA_RFTX_EXTRA, e->rftx_since_arm);
+	}
+	uint32_t at = e->tick - e->tx_last_arm;
+	uint8_t at8 = (uint8_t)(at > 2u ? 2u : at);
+	e->st.tx_rf_at[at8]++;
+	if (e->rf_at_prev != 0xFFu && at8 != e->rf_at_prev) {
+		tx_anom(e, HRC7000_TXA_RF_AT, at > 0xFFFu ? 0xFFFu : at);
+	}
+	e->rf_at_prev = at8;
 	e->ops->rf(e->ops->ctx, true);	// FD6818 idle -> TX, 3.1 ms ahead of the burst
 	e->rf_tx = true;
 	e->t_rf_tx = now(e);
@@ -1177,6 +1216,10 @@ bool hrc7000_dmr_tx_begin(hrc7000_dmr_t *e, dmr_timing_t timing, int8_t ts, dmr_
 		e->last_kind = KIND_UNSET;
 		e->next_voice = 0;
 		e->t_tick = now(e);	// the stall watchdog counts from here
+		e->t_txb = e->t_tick;
+		e->rftx_since_arm = 0;
+		e->rf_at_prev = 0xFFu;
+		e->arm_b31 = 0xFFu;
 		// 6.1 step 1: codec buffers cleared, nothing in the next slot
 		w(e, C7_AUDIO_BUFFER_CLR, 0x03);
 		// Burst F's field for the whole over, set before key-up: our TX RAM 0x29-0x2C (an encrypted over's ALG / key

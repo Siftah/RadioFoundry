@@ -739,6 +739,8 @@ HRC_FLASHFUNC void hrc_dmr_stats_reset(void)
 	// Every field before last_rx_type_info is a uint32_t counter (hrc7000_dmr.h); the ISRs update them
 	lock(NULL);
 	memset(&eng.st, 0, offsetof(hrc7000_dmr_stats_t, last_rx_type_info));
+	lk_long = lk_max_us = tsj_n = tsj_max_us = tsj_last_ms = 0;
+	lk_max_task = tsj_task = "-";
 	lost_seen = 0;	// the loss record goes with its counters: health() would show a first loss from before the reset
 	lost_ms = 0;
 	memset(lost_regs, 0, sizeof lost_regs);
@@ -894,6 +896,32 @@ HRC_FLASHFUNC bool hrc_dmr_stats_line(uint8_t i, char *buf, uint8_t len)
 		put_kv(&o, " mg", bs.st.max_gap_us);
 		break;
 #endif
+	case HRC_DMR_DIAG_LINES - 5:	// TX cadence checks (hrc7000_dmr.h): armings off the 2-tick cadence, voice out of
+					// order, extra RF TX interrupts, LAYER2 b31 flips; RF TX interrupts 0 / 1 / 2+ ticks after
+					// their arming; anomalies logged
+		put_kv(&o, "ca g", m.tx_arm_gap);
+		put_kv(&o, " v", m.tx_voice_order);
+		put_kv(&o, " x", m.tx_rftx_extra);
+		put_kv(&o, " s", m.tx_slot_flip);
+		put_kv(&o, " at", m.tx_rf_at[0]);
+		put_kv(&o, "/", m.tx_rf_at[1]);
+		put_kv(&o, "/", m.tx_rf_at[2]);
+		put_kv(&o, " n", m.tx_anom_n);
+		break;
+	case HRC_DMR_DIAG_LINES - 4:	// the last 8 anomalies, oldest first: kind@ms since key-up:value (hex)
+	case HRC_DMR_DIAG_LINES - 3: {
+		uint32_t first = m.tx_anom_n > 8u ? m.tx_anom_n - 8u : 0u;
+		uint32_t k0 = first + (i == HRC_DMR_DIAG_LINES - 4 ? 0u : 4u);
+		put(&o, i == HRC_DMR_DIAG_LINES - 4 ? "an" : "an'");
+		for (uint32_t k = k0; k < k0 + 4u && k < m.tx_anom_n; k++) {
+			uint32_t a = m.tx_anom[k % 8u];
+			put_kv(&o, " ", (a >> 12) & 0xFu);
+			put_kv(&o, "@", a >> 16);
+			put(&o, ":");
+			put_x(&o, a & 0xFFFu, 3);
+		}
+		break;
+	}
 	case HRC_DMR_DIAG_LINES - 2:	// engine lock holds over 1 ms, the longest (us) and its task; slot interrupts
 					// during TX over 1 ms off the grid, the worst (us), the last one's uptime (ms) and lock holder
 		put_kv(&o, "lk", lk_long);
