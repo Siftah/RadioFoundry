@@ -1504,6 +1504,14 @@ static void tx_start_voice(uint32_t now)
 	s.tx_crypt = s.cfg.tx_crypt_alg != 0 && s.cfg.crypt != NULL && s.cfg.crypt_mi != NULL;
 	s.tx_pi = s.tx_crypt;
 	s.tx_mi = s.tx_crypt ? s.cfg.crypt_mi(now, s.cfg.crypt_ctx) : 0;
+	if (s.modem->set_burst_f != NULL) {
+		// An encrypted over repeats its ALG / key ID in every burst F, as stock does: a receiver reads it there
+		// (a stock DM-32 played the first superframe and then noise without it)
+		uint32_t f = dmrFecPrivacyField(s.cfg.tx_crypt_alg, s.cfg.tx_crypt_key_id);
+		uint8_t field[4] = { (uint8_t)(f >> 24), (uint8_t)(f >> 16), (uint8_t)(f >> 8), (uint8_t)f };
+
+		s.modem->set_burst_f(s.tx_crypt ? field : NULL);
+	}
 	s.tx_crypt_n = 0;
 	s.voice_index = 0;
 	s.queued = s.started = 0;

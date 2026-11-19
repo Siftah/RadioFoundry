@@ -416,6 +416,14 @@ static void arm(hrc7000_dmr_t *e, const dmr_tx_burst_t *b)
 			buf10[9] = hrc7000_dmr_emb_checksum(lc);
 			write_tx_ram(e, buf10, 10);
 		}
+		if (idx == 5) {
+			// Burst F: our field from TX RAM 0x29-0x2C (an encrypted over's ALG / key ID), else the RC encoder's (2.8)
+			if (e->burst_f_set) {
+				for (uint8_t i = 0; i < 4; i++)
+					e->dev->buf[C7_TX_RAM + 0x29u + i] = e->burst_f[i];
+			}
+			w(e, C7_VOICE_EMB_CTRL, e->burst_f_set ? 0x00 : 0x02);
+		}
 		e->next_voice = (uint8_t)((idx + 1u) % 6u);
 		w(e, C7_LAYER2_SEND_TYPE, hrc7000_dmr_send_type(kind, idx, e->lcss));
 	} else {
@@ -1279,6 +1287,15 @@ void hrc7000_dmr_set_embedded_lc(hrc7000_dmr_t *e, const uint8_t lc[9])
 	lock(e);
 	memcpy(e->emb_lc, lc, 9);
 	e->emb_set = true;
+	unlock(e);
+}
+
+void hrc7000_dmr_set_burst_f(hrc7000_dmr_t *e, const uint8_t field[4])
+{
+	lock(e);
+	if (field != NULL)
+		memcpy(e->burst_f, field, 4);
+	e->burst_f_set = field != NULL;
 	unlock(e);
 }
 
