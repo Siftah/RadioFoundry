@@ -250,7 +250,7 @@ int8_t hrc7000_dmr_tx_fill(hrc7000_dmr_t *e, const dmr_tx_burst_t *b);
 void hrc7000_dmr_tx_end(hrc7000_dmr_t *e);
 void hrc7000_dmr_tx_abort(hrc7000_dmr_t *e);
 void hrc7000_dmr_set_embedded_lc(hrc7000_dmr_t *e, const uint8_t lc[9]);
-// Burst F's 32-bit embedded field (TX RAM 0x29-0x2C, VOICE_EMB_CTRL b1 off) from the next burst F; NULL: the chip's RC filler again
+// Burst F's 32-bit embedded field (TX RAM 0x29-0x2C, VOICE_EMB_CTRL b1 off) from the next tx_begin; NULL: the chip's RC filler again
 void hrc7000_dmr_set_burst_f(hrc7000_dmr_t *e, const uint8_t field[4]);
 void hrc7000_dmr_set_cc_filter(hrc7000_dmr_t *e, int8_t cc);
 bool hrc7000_dmr_is_transmitting(const hrc7000_dmr_t *e);

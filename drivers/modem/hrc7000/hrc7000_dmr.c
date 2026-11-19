@@ -416,14 +416,6 @@ static void arm(hrc7000_dmr_t *e, const dmr_tx_burst_t *b)
 			buf10[9] = hrc7000_dmr_emb_checksum(lc);
 			write_tx_ram(e, buf10, 10);
 		}
-		if (idx == 5) {
-			// Burst F: our field from TX RAM 0x29-0x2C (an encrypted over's ALG / key ID), else the RC encoder's (2.8)
-			if (e->burst_f_set) {
-				for (uint8_t i = 0; i < 4; i++)
-					e->dev->buf[C7_TX_RAM + 0x29u + i] = e->burst_f[i];
-			}
-			w(e, C7_VOICE_EMB_CTRL, e->burst_f_set ? 0x00 : 0x02);
-		}
 		e->next_voice = (uint8_t)((idx + 1u) % 6u);
 		w(e, C7_LAYER2_SEND_TYPE, hrc7000_dmr_send_type(kind, idx, e->lcss));
 	} else {
@@ -1187,6 +1179,14 @@ bool hrc7000_dmr_tx_begin(hrc7000_dmr_t *e, dmr_timing_t timing, int8_t ts, dmr_
 		e->t_tick = now(e);	// the stall watchdog counts from here
 		// 6.1 step 1: codec buffers cleared, nothing in the next slot
 		w(e, C7_AUDIO_BUFFER_CLR, 0x03);
+		// Burst F's field for the whole over, set before key-up: our TX RAM 0x29-0x2C (an encrypted over's ALG / key
+		// ID) or the RC encoder's (2.8). Written at the first burst F instead, the chip dropped that burst and the over
+		// slipped 81.6 ms (SDR, 2026-11-19)
+		if (e->burst_f_set) {
+			for (uint8_t i = 0; i < 4; i++)
+				e->dev->buf[C7_TX_RAM + 0x29u + i] = e->burst_f[i];
+		}
+		w(e, C7_VOICE_EMB_CTRL, e->burst_f_set ? 0x00 : 0x02);
 		e->tx_bs = timing == DMR_TIMING_ALIGNED && e->rx_bs && ts > 0;
 		if (e->tx_bs) {
 			e->tx_state = TXS_LOCK;	// lock_tick arms with the lock
